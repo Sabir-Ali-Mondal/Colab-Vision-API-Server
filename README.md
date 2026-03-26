@@ -79,4 +79,4 @@ google colab ai, run llm on colab, free gpu ai, vllm server, openai compatible a
 
 ## Summary
 
-A simple way to run powerful AI models in the cloud and use them locally through a clean API.
+Turn free Google Colab GPU into your own OpenAI-style AI server using a single script file. It combines vLLM, Cloudflare tunnel, and vision models into a simple workflow that runs on Colab, local Linux, or cloud GPU with no setup. The script installs dependencies, detects hardware (CPU/GPU/TPU), runs the model, exposes a public API, and lets you send image and text requests from your local PC—no GPU needed, no complex setup, just a clean and practical AI backend.
