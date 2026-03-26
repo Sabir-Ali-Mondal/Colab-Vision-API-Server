@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
-"""
-vllm_server.py
-──────────────────────
-One script. Runs on CPU, T4 GPU, or v5e TPU without any changes.
-"""
 
-# ── MUST be line 1: set a safe default before any import touches vllm ─────────
+# set safe default before vllm import
 import os
 os.environ.setdefault("VLLM_TARGET_DEVICE", "cpu")
 
-# ── PyTorch/vLLM Workaround ───────────────────────────────────────────────────
-# Fix for vLLM attempting to access torch._inductor.config without importing it
+# workaround for vllm import issue
 try:
     import torch
     import torch._inductor.config
@@ -33,13 +27,11 @@ def log(msg: str, level: str = "INFO") -> None:
     except Exception:
         pass
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 1 — HARDWARE DETECTION
-# ═════════════════════════════════════════════════════════════════════════════
+# hardware detection
 def _detect_hardware() -> dict:
     forced = os.environ.get("VLLM_DEVICE", "").lower()
 
-    # ── GPU ────────────────────────────────────────────────────────────────
+    # check for gpu
     is_gpu = False
     gpu_name, cc, n_gpu = "", (0, 0), 1
     try:
@@ -52,14 +44,14 @@ def _detect_hardware() -> dict:
         if shutil.which("nvidia-smi"):
             is_gpu = True
 
-    # ── TPU ────────────────────────────────────────────────────────────────
+    # check for tpu
     is_tpu = (
         Path("/dev/accel0").exists()
         or bool(os.environ.get("COLAB_TPU_ADDR"))
         or forced == "tpu"
     )
 
-    # ── Decision ───────────────────────────────────────────────────────────
+    # make hardware decision
     if forced == "cpu" or (not is_gpu and not is_tpu):
         hw = "cpu"
     elif forced == "tpu" or is_tpu:
@@ -70,7 +62,7 @@ def _detect_hardware() -> dict:
     log(f"Hardware detected: {hw.upper()}"
         + (f"  ({gpu_name}, cc={cc})" if hw == "gpu" else ""))
 
-    # ── vLLM flag sets ─────────────────────────────────────────────────────
+    # set vllm flags based on hardware
     if hw == "cpu":
         os.environ["VLLM_TARGET_DEVICE"] = "cpu"
         return dict(
@@ -116,9 +108,7 @@ def _detect_hardware() -> dict:
 
 HW = _detect_hardware()
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 2 — INSTALL DEPENDENCIES
-# ═════════════════════════════════════════════════════════════════════════════
+# install dependencies
 _DEPS = [
     ("vllm",            "vllm>=0.6.0,<0.12.0"),
     ("transformers",    "transformers>=4.45.0"),
@@ -132,7 +122,7 @@ _DEPS = [
 ]
 
 def install_dependencies() -> None:
-    log("=== Installing / verifying dependencies ===")
+    log("Installing dependencies")
     missing = [spec for imp, spec in _DEPS if not _try_import(imp)]
     if missing:
         log(f"pip install: {missing}")
@@ -156,9 +146,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from PIL import Image, ImageDraw
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 3 — CONFIG
-# ═════════════════════════════════════════════════════════════════════════════
+# configuration
 VISION_MODELS = [
     "Qwen/Qwen2.5-VL-3B-Instruct",
     "Qwen/Qwen2-VL-2B-Instruct",
@@ -172,29 +160,25 @@ _tunnel_proc: subprocess.Popen | None = None
 TUNNEL_URL:   str  = ""
 _active_model: str = VISION_MODELS[0]
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 4 — GOOGLE DRIVE MOUNT
-# ═════════════════════════════════════════════════════════════════════════════
+# google drive mount
 def try_mount_gdrive() -> None:
     global MODEL_CACHE_DIR
     try:
-        from google.colab import drive  # type: ignore
+        from google.colab import drive
         drive.mount("/content/drive", force_remount=False)
         cache = Path("/content/drive/MyDrive/vllm_server/models")
         cache.mkdir(parents=True, exist_ok=True)
         MODEL_CACHE_DIR = cache
         os.environ["HF_HOME"] = str(cache)
-        log(f"Google Drive mounted — cache: {cache}")
+        log(f"Google Drive mounted cache: {cache}")
     except ImportError:
-        log("Not in Colab — using /tmp/hf_cache")
+        log("Not in Colab using /tmp/hf_cache")
     except Exception as exc:
         log(f"Drive mount skipped: {exc}", "WARN")
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 5 — vLLM PROCESS
-# ═════════════════════════════════════════════════════════════════════════════
+# vllm process management
 def _pick_model() -> str:
-    from huggingface_hub import HfApi  # type: ignore
+    from huggingface_hub import HfApi
     api = HfApi()
     for model_id in VISION_MODELS:
         local = MODEL_CACHE_DIR / "--".join(["models"] + model_id.split("/"))
@@ -219,7 +203,6 @@ def start_vision_server() -> subprocess.Popen:
         "--model",               _active_model,
         "--port",                str(VISION_PORT),
         "--host",                "0.0.0.0",
-        # NOTE: Removed --hf-cache-dir, vLLM now just uses the HF_HOME env variable automatically
         "--dtype",               HW["dtype"],
         "--max-model-len",       str(HW["max_model_len"]),
         "--max-num-seqs",        str(HW["max_seqs"]),
@@ -231,8 +214,8 @@ def start_vision_server() -> subprocess.Popen:
 
     env = {**os.environ, "VLLM_TARGET_DEVICE": os.environ["VLLM_TARGET_DEVICE"]}
 
-    log(f"Starting vLLM [{HW['label']}]  model={_active_model}")
-    log(f"  Tip: !tail -f {VLLM_LOG}  in another cell")
+    log(f"Starting vLLM [{HW['label']}] model={_active_model}")
+    log(f"Tail logs with: !tail -f {VLLM_LOG}")
 
     _proc = subprocess.Popen(
         cmd,
@@ -246,12 +229,12 @@ def start_vision_server() -> subprocess.Popen:
 def wait_for_ready() -> bool:
     timeout  = HW["timeout"]
     deadline = time.time() + timeout
-    log(f"Waiting for vLLM  [{HW['label']}]  (up to {timeout//60} min)…")
+    log(f"Waiting for vLLM [{HW['label']}] (up to {timeout//60} min)")
     last_sz  = 0
 
     while time.time() < deadline:
         if _proc and _proc.poll() is not None:
-            log("ERROR: vLLM died. Last log:", "ERROR")
+            log("vLLM died. Last log:", "ERROR")
             try:
                 print(VLLM_LOG.read_text(errors="replace")[-4000:], flush=True)
             except Exception:
@@ -260,7 +243,7 @@ def wait_for_ready() -> bool:
         try:
             if httpx.get(f"http://127.0.0.1:{VISION_PORT}/health",
                          timeout=3).status_code == 200:
-                log(f"vLLM ready ✓  [{HW['label']}]")
+                log(f"vLLM ready [{HW['label']}]")
                 return True
         except Exception:
             pass
@@ -276,12 +259,10 @@ def wait_for_ready() -> bool:
             pass
         time.sleep(5)
 
-    log("ERROR: vLLM startup timed out.", "ERROR")
+    log("vLLM startup timed out.", "ERROR")
     return False
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 6 — IMAGE LOADING
-# ═════════════════════════════════════════════════════════════════════════════
+# image loading helpers
 def _load_image(src: str) -> tuple[str, str]:
     if src.startswith("data:"):
         m = re.match(r"data:(image/[^;]+);base64,(.+)", src, re.DOTALL)
@@ -305,16 +286,13 @@ def _load_image(src: str) -> tuple[str, str]:
             "image/webp" if peek[8:12] == b"WEBP"    else "image/png")
     return src, mime
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 7 — FASTAPI ROUTER
-# ═════════════════════════════════════════════════════════════════════════════
-app  = FastAPI(title="UI-Agent Server v5.1")
+# fastapi routing
+app  = FastAPI(title="UI-Agent Server")
 BASE = f"http://127.0.0.1:{VISION_PORT}"
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "5.1",
-            "hardware": HW["label"], "model": _active_model}
+    return {"status": "ok", "hardware": HW["label"], "model": _active_model}
 
 @app.post("/v1/agent")
 async def agent_endpoint(request: Request):
@@ -341,7 +319,7 @@ async def agent_endpoint(request: Request):
                             "image_url": {"url": f"data:{mime};base64,{b64}"}})
             log(f"Agent | {mime} | {prompt[:60]!r}")
         except Exception as exc:
-            log(f"Image load failed: {exc} — text-only", "WARN")
+            log(f"Image load failed: {exc} text-only", "WARN")
     else:
         log(f"Agent | no image | {prompt[:60]!r}")
 
@@ -398,16 +376,14 @@ def start_proxy_thread() -> None:
         daemon=True, name="proxy",
     ).start()
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 8 — CLOUDFLARE TUNNEL
-# ═════════════════════════════════════════════════════════════════════════════
+# cloudflare tunnel setup
 def start_cloudflare_tunnel(port: int) -> str:
     global TUNNEL_URL, _tunnel_proc
     if not shutil.which("cloudflared"):
         arch = subprocess.run("uname -m", shell=True,
                               capture_output=True, text=True).stdout.strip()
         sfx  = "arm64" if arch == "aarch64" else "amd64"
-        log(f"Downloading cloudflared ({sfx})…")
+        log(f"Downloading cloudflared ({sfx})")
         subprocess.run(
             f"curl -fsSL https://github.com/cloudflare/cloudflared/releases/"
             f"latest/download/cloudflared-linux-{sfx} "
@@ -434,11 +410,9 @@ def start_cloudflare_tunnel(port: int) -> str:
     log("Tunnel URL not detected.", "WARN")
     return ""
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 9 — SMOKE TEST
-# ═════════════════════════════════════════════════════════════════════════════
+# smoke test
 def run_smoke_test() -> None:
-    log("=== Smoke test ===")
+    log("Smoke test running")
     img  = Image.new("RGB", (280, 120), (236, 233, 216))
     draw = ImageDraw.Draw(img)
     draw.rectangle([0, 0, 280, 22], fill=(0, 78, 152))
@@ -459,31 +433,27 @@ def run_smoke_test() -> None:
         }, timeout=120)
         result = r.json()
         if "text" in result:
-            log(f"Smoke test PASS ✓  →  {result['text']!r}")
+            log(f"Smoke test pass result: {result['text']!r}")
         else:
-            log(f"Smoke test FAIL  →  {result}", "WARN")
+            log(f"Smoke test fail result: {result}", "WARN")
     except Exception as exc:
-        log(f"Smoke test ERROR: {exc}", "ERROR")
+        log(f"Smoke test error: {exc}", "ERROR")
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 10 — WATCHDOG
-# ═════════════════════════════════════════════════════════════════════════════
+# watchdog loop
 def watchdog_loop() -> None:
     log("Watchdog started.")
     while True:
         time.sleep(30)
         if _proc and _proc.poll() is not None:
-            log("vLLM crashed — restarting…", "WARN")
+            log("vLLM crashed restarting", "WARN")
             start_vision_server()
         if _tunnel_proc and _tunnel_proc.poll() is not None:
-            log("Tunnel crashed — restarting…", "WARN")
+            log("Tunnel crashed restarting", "WARN")
             start_cloudflare_tunnel(PROXY_PORT)
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 11 — SHUTDOWN
-# ═════════════════════════════════════════════════════════════════════════════
+# shutdown handling
 def shutdown(signum=None, frame=None) -> None:
-    log("Shutting down…")
+    log("Shutting down")
     for p in [_proc, _tunnel_proc]:
         if p:
             try:
@@ -495,22 +465,18 @@ def shutdown(signum=None, frame=None) -> None:
 signal.signal(signal.SIGINT,  shutdown)
 signal.signal(signal.SIGTERM, shutdown)
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 12 — MAIN
-# ═════════════════════════════════════════════════════════════════════════════
+# main execution
 def main() -> None:
     PID_FILE.write_text(str(os.getpid()))
 
-    # --- PORT CLEANUP (Fixes [Errno 98] Address already in use) ---
+    # port cleanup
     subprocess.run(["fuser", "-k", f"{PROXY_PORT}/tcp"], capture_output=True)
     subprocess.run(["fuser", "-k", f"{VISION_PORT}/tcp"], capture_output=True)
-    time.sleep(1) # Give ports a second to unbind
+    time.sleep(1)
 
-    log("=" * 60)
-    log("  vllm_server.py  v5.1")
-    log(f"  Hardware : {HW['label']}")
-    log(f"  dtype    : {HW['dtype']}   max_len: {HW['max_model_len']}   max_seqs: {HW['max_seqs']}")
-    log("=" * 60)
+    log("vllm_server.py starting")
+    log(f"Hardware : {HW['label']}")
+    log(f"dtype : {HW['dtype']} max_len: {HW['max_model_len']} max_seqs: {HW['max_seqs']}")
 
     install_dependencies()
     try_mount_gdrive()
@@ -526,19 +492,10 @@ def main() -> None:
     tunnel_url = start_cloudflare_tunnel(PROXY_PORT)
     public_url = tunnel_url or f"http://127.0.0.1:{PROXY_PORT}"
 
-    log("=" * 60)
-    log(f"  ENDPOINT : {public_url}/v1/agent")
-    log(f"  MODEL    : {_active_model}")
-    log(f"  HARDWARE : {HW['label']}")
-    log("=" * 60)
-    log("  FROM YOUR AGENT:")
-    log("    import httpx, base64, pathlib")
-    log("    b64 = base64.b64encode(pathlib.Path('screen.png').read_bytes()).decode()")
-    log(f"    r = httpx.post('{public_url}/v1/agent',")
-    log("          json={'image': b64, 'prompt': 'What to click?'}, timeout=120)")
-    log("    print(r.json()['text'])")
-    log("=" * 60)
-
+    log(f"ENDPOINT : {public_url}/v1/agent")
+    log(f"MODEL : {_active_model}")
+    log(f"HARDWARE : {HW['label']}")
+    
     time.sleep(2)
     run_smoke_test()
 
