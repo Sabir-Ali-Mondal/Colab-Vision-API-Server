@@ -1,29 +1,82 @@
 # Colab Vision API Server
 
-This project allows you to run a vision-language model on a free Google Colab GPU and expose it as a public, OpenAI-compatible API using a Cloudflare Tunnel. This enables you to send images and text prompts from your local computer and receive responses from the AI running in the cloud.
+Run vision AI models on a free Google Colab GPU (or any Linux machine) and use them from your local PC through a public API.
+
+---
+
+## Overview
+
+This project lets you run a vision-language model in the cloud and access it locally.
+
+It uses:
+
+* vLLM to serve the model
+* Cloudflare Tunnel to create a public URL
+* OpenAI-compatible API for easy integration
+
+You can send images and text from your local machine and get AI responses from Colab.
+
+---
 
 ## Goal
 
-The primary objective is to bridge powerful, GPU-intensive AI models with local development environments. By hosting the model on Colab, you can leverage free GPU resources for tasks like image analysis without needing powerful local hardware.
+The goal is to make powerful AI models easy to use without needing a strong local computer.
+
+Run the model in the cloud and access it locally through a simple API.
+
+---
 
 ## How It Works
 
-1.  **Server on Colab**: A Python script using `vLLM` serves a vision-language model on a Google Colab instance.
-2.  **Public Tunnel**: The script initiates a secure Cloudflare Tunnel, exposing the Colab server to the internet with a public URL.
-3.  **Local Client**: A separate Python script on your local machine sends API requests, containing an image and a prompt, to this public URL.
-4.  **AI Response**: The model on Colab processes the request and sends the generated text back to your local machine.
+1. A Python script runs a vision model using vLLM on Colab or Linux
+2. A Cloudflare Tunnel exposes the server as a public URL
+3. Your local PC sends requests (image + prompt)
+4. The model processes and returns a response
+
+---
 
 ## Features
 
-*   **Free GPU Usage**: Operates on Google Colab's free tier.
-*   **Public API**: Creates a temporary public API endpoint for your model.
-*   **OpenAI Compatible**: The server endpoint is structured for compatibility with standard OpenAI API requests.
-*   **Simple Setup**: Requires minimal configuration to get started.
+* Works on Colab, local Linux, or cloud GPU
+* Uses free Colab GPU
+* OpenAI-compatible API
+* Supports image and text input
+* Public API via Cloudflare Tunnel
+* Automatic hardware detection (CPU / GPU / TPU)
+* Simple setup
+
+---
+
+## Run Anywhere
+
+This project is not limited to Colab.
+
+You can run it on:
+
+* Google Colab
+* Local Linux (WSL2 supported)
+* Cloud GPU servers
+
+It automatically detects your hardware and configures itself.
+
+---
 
 ## Getting Started
 
-Follow the `GUIDE.md` for a step-by-step tutorial on how to set up the server and run the client.
+Follow the instructions in **GUIDE.md** to:
+
+* Run the server
+* Get the public API URL
+* Send requests from your local PC
+
+---
 
 ## Search Keywords
 
-github run llm on google colab with cloudflare tunnel, expose colab gpu as api, vllm server on google colab with public url, run openai compatible api on colab free gpu, list of vision models compatible with vLLM
+google colab ai, run llm on colab, free gpu ai, vllm server, openai compatible api, cloudflare tunnel api, expose colab gpu as api, multimodal ai, vision language model
+
+---
+
+## Summary
+
+A simple way to run powerful AI models in the cloud and use them locally through a clean API.
