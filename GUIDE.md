@@ -12,10 +12,9 @@ This guide provides instructions to set up the AI server on Google Colab and run
 3.  **Get the Public URL**: After a few moments, the script will print a public URL ending in `.trycloudflare.com`. It will look similar to this: `ENDPOINT : https://your-unique-name.trycloudflare.com/v1/agent`.
 4.  **Copy this URL** and keep the Colab notebook tab open.
 
-```
-Note on Startup Time: The first time you run the server, it takes about 10 minutes to download and install the large AI model.
-Subsequent runs will be much faster (around 2 to 3 minutes) because the model is cached and ready to use.
-```
+*Note on Startup Time: The first time you run the server, it takes about 10 minutes to download and install the large AI model.
+Subsequent runs will be much faster (around 2 to 3 minutes) because the model is cached and ready to use.*
+
 
 ## Part 2: Run the Client on Your Local PC
 
