@@ -16,6 +16,8 @@ It uses:
 
 You can send images and text from your local machine and get AI responses from Colab.
 
+![Colab Vision API Demo](https://github.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/blob/0fc3ec3c31914f0183df4ac8cbcf352469301a4d/colab-vision-api-demonstration.png?raw=true)
+
 ---
 
 ## Goal
