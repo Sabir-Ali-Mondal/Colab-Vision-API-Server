@@ -1,127 +1,175 @@
-### `server.py` — 969 lines, 10 sections
+# Qwen3.5 Server Setup & API Quick Start Guide
 
-| Section | Feature |
-|---------|---------|
-| **§1 Deps** | Auto-installs fastapi, uvicorn, httpx, Pillow, pypdf, pdfplumber, pytesseract, aiofiles + vLLM nightly. Failures on optional packages are warnings, not crashes. |
-| **§2 Hardware** | `nvidia-smi` probe → auto-selects `max_model_len` (16K→262K based on VRAM). T4=32K, A100-40G=131K, A100-80G=262K. |
-| **§3 Model cache** | Checks Google Drive → HF snapshot cache → downloads. Picks newest HF snapshot automatically. |
-| **§4 vLLM** | Launches with `--reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder`. Watchdog restarts on crash. |
-| **§5 Cloudflare** | Auto-installs binary, extracts public URL, watchdog restarts tunnel on crash. |
-| **§6 Media** | PDF→text via pdfplumber → pypdf → pytesseract OCR fallback. Image/video/URL/base64/file-path all normalised to OpenAI content blocks. |
-| **§7 Rate limiter** | Per-IP sliding-window (configurable rpm, 0=off). Returns `Retry-After` header. |
-| **§8 Sampling** | All 4 official Qwen3.5 presets: thinking+general, thinking+coding, thinking+reasoning, instruct modes. |
-| **§9 FastAPI** | Auth middleware, access logger, `/health`, `/logs`, `/logs/vllm`, `/v1/models`, `/v1/agent`, `/v1/chat/completions`, catch-all passthrough. |
-| **§10 Main** | CLI wins > `COLAB_CONFIG` > defaults. `parse_known_args` silences Jupyter's `-f kernel.json`. |
-
-### Node.js client usage (your OpenRouter-style snippet)
-
-```js
-const res = await fetch(`${QWEN_URL}/v1/agent`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json",
-             "Authorization": `Bearer ${API_KEY}` },
-  body: JSON.stringify({
-    prompt: "Analyse all inputs",
-    files:  [base64Video, base64PDF, base64Image],  // data URLs or http URLs
-    task:   "general",
-    stream: false,
-  })
-});
-```
-
-## Here are the instructions to run it based on your environment:
+Welcome to your personal Qwen3.5 server. This guide covers how to start your server in Google Colab (or locally), how to get your connection credentials, and how to use the OpenAI-compatible API and Multimodal Agent.
 
 ---
 
-### Option 1: Running in Google Colab (Recommended)
+### 1. Setup & Running the Server
 
-**Step 1: Open Colab and Enable a GPU**
-1. Go to [Google Colab](https://colab.research.google.com/).
-2. Create a New Notebook.
-3. Go to **Runtime > Change runtime type**.
-4. Select a **T4 GPU** (or A100/V100 if you have Colab Pro) and click Save.
+**Running in Google Colab (Recommended)**
+1. Go to Google Colab and create a New Notebook.
+2. Go to **Runtime > Change runtime type** and select a **T4 GPU**. Click Save.
+3. Paste the entire `server.py` script into the first cell.
+4. Near the top of the script, find the `COLAB_CONFIG` block. Set your desired API key here to secure your server:
+   ```python
+   COLAB_CONFIG: dict = {
+       "model":           "4b",
+       "api_key":         "your_secret_password_here", # Set your key here
+       # ... other settings
+   }
+   ```
+5. Click the **Play** button on the cell to run it. 
+6. The first run will take 5-10 minutes to install dependencies (vLLM) and download the Qwen model.
 
-**Step 2: Paste the Code**
-Copy the entire script you provided and paste it into the first cell of your Colab notebook.
-
-**Step 3: Configure (Optional)**
-Look at the top of the script for the `COLAB_CONFIG` block. You can change:
-* `"model": "4b"` (Change to `"2b"` if you want it to run faster/use less memory).
-* `"api_key": "your_password"` (Highly recommended to prevent others from using your server).
-
-**Step 4: Run the Cell**
-Click the **Play** button on the cell. 
-* *Note: The first time you run it, it will take 5–10 minutes to install vLLM and download the AI model.*
-* Once it is ready, scroll to the bottom of the output. Look for a box that says:
-  `🔗 PUBLIC URL : https://some-random-words.trycloudflare.com`
-
----
-
-### Option 2: Running on a Local Linux PC or Cloud VM (RunPod, AWS, etc.)
-
-*Prerequisites: You must be on Linux (Ubuntu recommended), have Python 3.10+, and have an NVIDIA GPU with CUDA installed. (vLLM does not run natively on Windows/Mac).*
-
-**Step 1: Save the file**
-Open a terminal, create a file named `server.py`, and paste the code inside.
-```bash
-nano server.py
-# Paste the code, then press Ctrl+O, Enter, Ctrl+X to save and exit
-```
-
-**Step 2: Make it executable**
-```bash
-chmod +x server.py
-```
-
-**Step 3: Run it**
-You can run it simply by typing:
-```bash
-./server.py
-```
-*It will prompt you to choose a model, install dependencies automatically, download the model, and generate a public Cloudflare URL.*
-
-**Alternative: Run with CLI Arguments**
-You can bypass the interactive prompts by passing arguments (as mentioned in the script's docstring):
-```bash
-./server.py --model 4b --api-key mysecretkey
-```
+**Running on a Local Linux PC / Cloud VM**
+1. Save the code to a file named `server.py`.
+2. Make it executable: `chmod +x server.py`
+3. Run it via terminal, passing your API key as an argument:
+   ```bash
+   ./server.py --model 4b --api-key your_secret_password_here
+   ```
 
 ---
 
-### How to use your new API
+### 2. Getting Your Link and Key
 
-Once the server is running and prints the Cloudflare `PUBLIC URL`, you can connect to it exactly like the OpenAI API. 
+Once the server has finished downloading and starting, it will generate a secure public tunnel via Cloudflare. Scroll to the bottom of the output logs. 
 
-Here is a test you can run from **any other computer** using your terminal:
-
-```bash
-curl -X POST "https://YOUR-CLOUDFLARE-URL.trycloudflare.com/v1/chat/completions" \
-     -H "Content-Type: application/json" \
-     -H "Authorization: Bearer YOUR_API_KEY_IF_YOU_SET_ONE" \
-     -d '{
-       "model": "4b",
-       "messages": [
-         {"role": "user", "content": "Write a haiku about artificial intelligence."}
-       ]
-     }'
+You are looking for a banner that looks like this:
+```text
+==================================================================
+  [LINK] PUBLIC URL       : https://random-words-here.trycloudflare.com
+  chat/completions        : https://random-words-here.trycloudflare.com/v1/chat/completions
+  agent (multimodal)      : https://random-words-here.trycloudflare.com/v1/agent
+==================================================================
 ```
 
-**Using it in Python (with the official OpenAI library):**
+*   **Your Base URL** is the `PUBLIC URL` link with `/v1` added to the end.
+*   **Your API Key** is whatever you typed into the `COLAB_CONFIG` or passed via the `--api-key` argument.
+
+---
+
+### 3. Connection Details
+
+To connect your existing apps, scripts, or UI clients (like Chatbox or AnythingLLM), use these details:
+
+* **Base URL:** `https://<YOUR_CLOUDFLARE_URL>.trycloudflare.com/v1`
+* **API Key:** `<YOUR_API_KEY>` *(or leave empty if you didn't set one)*
+* **Available Models:** `"4b"` or `"2b"`
+
+---
+
+### 4. Standard Chat Completions (OpenAI Compatible)
+
+Because the server uses standard formatting, you can use the official OpenAI SDKs without changing your code logic.
+
+**Python** (`pip install openai`)
 ```python
-# pip install openai
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="https://YOUR-CLOUDFLARE-URL.trycloudflare.com/v1",
-    api_key="your_api_key" # Or "empty" if you didn't set one
+    base_url="https://<YOUR_CLOUDFLARE_URL>.trycloudflare.com/v1",
+    api_key="your_api_key_here" # Use "empty" if no key is set
 )
 
 response = client.chat.completions.create(
     model="4b",
-    messages=[{"role": "user", "content": "Hello!"}],
-    stream=True # The server supports streaming!
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Write a python script to reverse a string."}
+    ],
+    stream=True # Set to True for real-time typewriter effect
 )
 
 for chunk in response:
     print(chunk.choices[0].delta.content or "", end="")
 ```
+
+**Node.js** (`npm install openai`)
+```javascript
+import OpenAI from 'openai';
+
+const openai = new OpenAI({
+  baseURL: 'https://<YOUR_CLOUDFLARE_URL>.trycloudflare.com/v1',
+  apiKey: 'your_api_key_here' // Use "empty" if no key is set
+});
+
+async function main() {
+  const completion = await openai.chat.completions.create({
+    model: '4b',
+    messages: [{ role: 'user', content: 'What is the capital of France?' }],
+  });
+  console.log(completion.choices[0].message.content);
+}
+main();
+```
+
+**cURL**
+```bash
+curl "https://<YOUR_CLOUDFLARE_URL>.trycloudflare.com/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_api_key_here" \
+  -d '{
+    "model": "4b",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+---
+
+### 5. Multimodal Agent (Images, Videos, & PDFs)
+
+Your server includes a custom `/v1/agent` endpoint that acts like OpenRouter. You can pass raw URLs, base64 strings, or file paths, and the server will automatically extract the text (from PDFs) or frames (from Video/Images) before passing it to Qwen3.5.
+
+**Node.js (Fetch)**
+```javascript
+const response = await fetch("https://<YOUR_CLOUDFLARE_URL>.trycloudflare.com/v1/agent", {
+  method: "POST",
+  headers: { 
+      "Content-Type": "application/json",
+      "Authorization": "Bearer your_api_key_here" 
+  },
+  body: JSON.stringify({
+    prompt: "Analyze these files and summarize them.",
+    files: [
+        "https://example.com/chart.png",           // Image URL
+        "https://example.com/report.pdf",          // PDF URL
+        "data:video/mp4;base64,AAAAIGZ0eX..."      // Base64 Video
+    ],
+    task: "reasoning", // Options: "general", "coding", "reasoning"
+    stream: false
+  })
+});
+
+const data = await response.json();
+console.log(data.choices[0].message.content);
+```
+
+**Python (Requests)**
+```python
+import requests
+
+url = "https://<YOUR_CLOUDFLARE_URL>.trycloudflare.com/v1/agent"
+headers = {"Authorization": "Bearer your_api_key_here"}
+
+payload = {
+    "prompt": "Read this invoice and extract the total amount.",
+    "files": ["https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"],
+    "task": "general"
+}
+
+response = requests.post(url, json=payload, headers=headers)
+print(response.json()["choices"][0]["message"]["content"])
+```
+
+---
+
+### 6. Available Endpoints Overview
+
+| Endpoint | Method | Description |
+| :--- | :--- | :--- |
+| `/v1/chat/completions` | `POST` | Standard OpenAI text/vision chat logic. |
+| `/v1/agent` | `POST` | Universal file handler (Images, PDFs, Video, URLs). |
+| `/v1/models` | `GET` | Returns list of available models (useful for UI dropdowns). |
+| `/health` | `GET` | Check server uptime, VRAM status, and total requests handled. |
+| `/logs` | `GET` | Fetch the last 100 lines of the proxy server logs (requires Auth). |
