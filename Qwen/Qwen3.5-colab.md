@@ -28,3 +28,100 @@ const res = await fetch(`${QWEN_URL}/v1/agent`, {
   })
 });
 ```
+
+## Here are the instructions to run it based on your environment:
+
+---
+
+### Option 1: Running in Google Colab (Recommended)
+
+**Step 1: Open Colab and Enable a GPU**
+1. Go to [Google Colab](https://colab.research.google.com/).
+2. Create a New Notebook.
+3. Go to **Runtime > Change runtime type**.
+4. Select a **T4 GPU** (or A100/V100 if you have Colab Pro) and click Save.
+
+**Step 2: Paste the Code**
+Copy the entire script you provided and paste it into the first cell of your Colab notebook.
+
+**Step 3: Configure (Optional)**
+Look at the top of the script for the `COLAB_CONFIG` block. You can change:
+* `"model": "4b"` (Change to `"2b"` if you want it to run faster/use less memory).
+* `"api_key": "your_password"` (Highly recommended to prevent others from using your server).
+
+**Step 4: Run the Cell**
+Click the **Play** button on the cell. 
+* *Note: The first time you run it, it will take 5–10 minutes to install vLLM and download the AI model.*
+* Once it is ready, scroll to the bottom of the output. Look for a box that says:
+  `🔗 PUBLIC URL : https://some-random-words.trycloudflare.com`
+
+---
+
+### Option 2: Running on a Local Linux PC or Cloud VM (RunPod, AWS, etc.)
+
+*Prerequisites: You must be on Linux (Ubuntu recommended), have Python 3.10+, and have an NVIDIA GPU with CUDA installed. (vLLM does not run natively on Windows/Mac).*
+
+**Step 1: Save the file**
+Open a terminal, create a file named `server.py`, and paste the code inside.
+```bash
+nano server.py
+# Paste the code, then press Ctrl+O, Enter, Ctrl+X to save and exit
+```
+
+**Step 2: Make it executable**
+```bash
+chmod +x server.py
+```
+
+**Step 3: Run it**
+You can run it simply by typing:
+```bash
+./server.py
+```
+*It will prompt you to choose a model, install dependencies automatically, download the model, and generate a public Cloudflare URL.*
+
+**Alternative: Run with CLI Arguments**
+You can bypass the interactive prompts by passing arguments (as mentioned in the script's docstring):
+```bash
+./server.py --model 4b --api-key mysecretkey
+```
+
+---
+
+### How to use your new API
+
+Once the server is running and prints the Cloudflare `PUBLIC URL`, you can connect to it exactly like the OpenAI API. 
+
+Here is a test you can run from **any other computer** using your terminal:
+
+```bash
+curl -X POST "https://YOUR-CLOUDFLARE-URL.trycloudflare.com/v1/chat/completions" \
+     -H "Content-Type: application/json" \
+     -H "Authorization: Bearer YOUR_API_KEY_IF_YOU_SET_ONE" \
+     -d '{
+       "model": "4b",
+       "messages": [
+         {"role": "user", "content": "Write a haiku about artificial intelligence."}
+       ]
+     }'
+```
+
+**Using it in Python (with the official OpenAI library):**
+```python
+# pip install openai
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://YOUR-CLOUDFLARE-URL.trycloudflare.com/v1",
+    api_key="your_api_key" # Or "empty" if you didn't set one
+)
+
+response = client.chat.completions.create(
+    model="4b",
+    messages=[{"role": "user", "content": "Hello!"}],
+    stream=True # The server supports streaming!
+)
+
+for chunk in response:
+    print(chunk.choices[0].delta.content or "", end="")
+```
