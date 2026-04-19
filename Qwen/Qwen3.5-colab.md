@@ -20,6 +20,7 @@ Welcome to your personal Qwen3.5 server. This guide covers how to start your ser
    ```
 5. Click the **Play** button on the cell to run it. 
 6. The first run will take 5-10 minutes to install dependencies (vLLM) and download the Qwen model.
+7. ```!cat /tmp/vllm.log``` for logs.
 
 **Running on a Local Linux PC / Cloud VM**
 1. Save the code to a file named `server.py`.
