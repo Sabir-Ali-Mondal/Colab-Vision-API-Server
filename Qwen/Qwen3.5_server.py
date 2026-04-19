@@ -7,7 +7,7 @@ COLAB_CONFIG: dict = {
     "model":           "4b",
     "max_tokens":      32768,
     "thinking":        True,
-    "max_model_len":   131072,
+    "max_model_len":   32768,
     "api_key":         "",
     "rate_limit_rpm":  60,
     "tunnel":          True,
@@ -182,7 +182,7 @@ def start_vllm(model_path: str, max_model_len: int) -> subprocess.Popen:
         "--tool-call-parser",       "qwen3_coder",
         "--trust-remote-code",
         "--served-model-name",      model_path,
-        "--disable-log-requests",
+        "--no-enable-log-requests", # Corrected for your vLLM version
     ]
     env = os.environ.copy()
     env["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
@@ -193,7 +193,7 @@ def start_vllm(model_path: str, max_model_len: int) -> subprocess.Popen:
     log.info(f"    [OK] vLLM started (PID {_vllm_proc.pid})")
     return _vllm_proc
 
-def wait_for_vllm(timeout: int = 420) -> None:
+def wait_for_vllm(timeout: int = 900) -> None:
     log.info("    [WAIT] waiting for vLLM...")
     deadline = time.time() + timeout
     ticks = 0
