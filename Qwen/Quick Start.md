@@ -307,8 +307,3 @@ python qwen_client.py
 * URLs are sent directly
 * If files are present, the client uses `/v1/agent`
 * If no files are present, it uses `/v1/chat/completions`
-
-```
-
-If you want, I can also :contentReference[oaicite:0]{index=0}.
-```
