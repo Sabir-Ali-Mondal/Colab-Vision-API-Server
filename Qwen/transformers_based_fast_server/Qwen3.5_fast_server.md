@@ -24,111 +24,114 @@ pip install requests
 Save this as `qwen_client.py`:
 
 ```python
+"""
+Qwen3.5 Gateway — Python Client
+Supports: text, images, PDFs, videos | local files + URLs | streaming
+"""
+
 import base64
+import json
 import mimetypes
 import requests
-import json
 from pathlib import Path
 
 
-# ======================================================
-# CLIENT
-# ======================================================
 class QwenClient:
     def __init__(self, base_url: str, api_key: str = ""):
         self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
+        self.api_key  = api_key
+        self.model    = "Qwen/Qwen3.5-4B"  # updated from /v1/models on connect
 
-    # -----------------------------
-    # Encode local file -> base64
-    # -----------------------------
+    # ------------------------------------------------------------------
+    # Connection + health
+    # ------------------------------------------------------------------
+    def connect(self) -> bool:
+        """
+        Check /health and fetch the real model name from /v1/models.
+        Returns True if server is reachable.
+        """
+        try:
+            r = requests.get(f"{self.base_url}/health", timeout=10)
+            r.raise_for_status()
+        except Exception as e:
+            raise ConnectionError(f"Server unreachable at {self.base_url}: {e}")
+
+        try:
+            r = requests.get(f"{self.base_url}/v1/models", timeout=10)
+            data = r.json()
+            models = data.get("data", [])
+            if models:
+                self.model = models[0]["id"]
+        except Exception:
+            pass  # keep default model name
+
+        print(f"[OK] Connected — model: {self.model}")
+        return True
+
+    # ------------------------------------------------------------------
+    # File helpers
+    # ------------------------------------------------------------------
     def _encode_file(self, path: str) -> str:
-        path = Path(path)
-
-        if not path.exists():
+        """Read a local file and return a base64 data URI."""
+        p = Path(path)
+        if not p.exists():
             raise FileNotFoundError(f"File not found: {path}")
-
-        mime, _ = mimetypes.guess_type(path)
-        if mime is None:
-            mime = "application/octet-stream"
-
-        with open(path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode()
-
+        mime, _ = mimetypes.guess_type(p)
+        mime = mime or "application/octet-stream"
+        b64  = base64.b64encode(p.read_bytes()).decode()
         return f"data:{mime};base64,{b64}"
 
-    # -----------------------------
-    # Prepare files (paths + URLs + base64)
-    # -----------------------------
-    def _prepare_files(self, files=None, urls=None):
-        output = []
+    def _prepare_sources(self, files=None, urls=None) -> list:
+        sources = []
+        for f in (files or []):
+            if isinstance(f, str) and f.startswith("data:"):
+                sources.append(f)          # already base64
+            else:
+                sources.append(self._encode_file(str(f)))
+        for u in (urls or []):
+            sources.append(str(u))         # pass URL as-is; server handles download
+        return sources
 
-        if files:
-            for f in files:
-                # Already base64
-                if isinstance(f, str) and f.startswith("data:"):
-                    output.append(f)
-                # Local file path
-                else:
-                    output.append(self._encode_file(f))
-
-        if urls:
-            for u in urls:
-                if not isinstance(u, str):
-                    raise ValueError("URL must be a string")
-                output.append(u)
-
-        return output
-
-    # -----------------------------
-    # MAIN RUN
-    # -----------------------------
+    # ------------------------------------------------------------------
+    # Main run
+    # ------------------------------------------------------------------
     def run(
         self,
         prompt: str,
         files=None,
         urls=None,
-        task="general",
-        stream=False,
-        temperature=0.7,
-        max_tokens=1024,
-        thinking=True,
-    ):
-        all_files = self._prepare_files(files, urls)
-
-        headers = {
-            "Content-Type": "application/json",
-        }
-
+        stream: bool = False,
+        temperature: float = 0.7,
+        max_tokens: int = 1024,
+    ) -> str:
+        sources = self._prepare_sources(files, urls)
+        headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        # Decide endpoint
-        use_agent = len(all_files) > 0
-
-        if use_agent:
+        if sources:
+            # Multimodal path — /v1/agent
             endpoint = "/v1/agent"
-            payload = {
-                "prompt": prompt,
-                "files": all_files,
-                "task": task,
-                "stream": stream,
-                "thinking": thinking,
-                "max_tokens": max_tokens,
+            payload  = {
+                "prompt":      prompt,
+                "files":       sources,
+                "stream":      stream,
+                "temperature": temperature,
+                "max_tokens":  max_tokens,
             }
         else:
+            # Text-only path — /v1/chat/completions
             endpoint = "/v1/chat/completions"
-            payload = {
-                "model": "Qwen/Qwen3.5-4B",
-                "messages": [{"role": "user", "content": prompt}],
+            payload  = {
+                "model":       self.model,
+                "messages":    [{"role": "user", "content": prompt}],
+                "stream":      stream,
                 "temperature": temperature,
-                "max_tokens": max_tokens,
-                "stream": stream,
-                "chat_template_kwargs": {"enable_thinking": thinking},
+                "max_tokens":  max_tokens,
             }
 
         try:
-            response = requests.post(
+            resp = requests.post(
                 self.base_url + endpoint,
                 headers=headers,
                 json=payload,
@@ -136,177 +139,127 @@ class QwenClient:
                 timeout=300,
             )
         except Exception as e:
-            raise Exception(f"Connection failed: {e}")
+            raise ConnectionError(f"Request failed: {e}")
 
-        if not response.ok:
-            raise Exception(f"API Error ({response.status_code}): {response.text}")
+        if not resp.ok:
+            raise RuntimeError(f"API error ({resp.status_code}): {resp.text}")
 
-        # -----------------------------
-        # STREAM MODE
-        # -----------------------------
+        # ── Streaming ─────────────────────────────────────────
         if stream:
             full = ""
-
             try:
-                for line in response.iter_lines():
-                    if not line:
+                for raw_line in resp.iter_lines():
+                    if not raw_line:
                         continue
-
-                    line = line.decode("utf-8", errors="ignore")
-
+                    line = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, bytes) else raw_line
                     if not line.startswith("data:"):
                         continue
-
-                    raw = line[5:].strip()
-
-                    if raw == "[DONE]":
+                    data = line[5:].strip()
+                    if data == "[DONE]":
                         break
-
                     try:
-                        chunk = json.loads(raw)
-                        delta = (
-                            chunk.get("choices", [{}])[0]
-                            .get("delta", {})
-                            .get("content", "")
-                        )
-
+                        chunk = json.loads(data)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
                         if delta:
                             print(delta, end="", flush=True)
                             full += delta
-
                     except Exception:
                         continue
-
             except Exception as e:
-                print(f"\n[Stream Error] {e}")
-
+                print(f"\n[Stream error] {e}")
             print()
             return full
 
-        # -----------------------------
-        # NORMAL MODE
-        # -----------------------------
+        # ── Non-streaming ─────────────────────────────────────
         try:
-            data = response.json()
+            data = resp.json()
         except Exception:
-            raise Exception("Invalid JSON response")
+            raise RuntimeError("Server returned invalid JSON")
 
         return (
-            data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content")
+            data.get("choices", [{}])[0].get("message", {}).get("content")
             or data.get("error")
             or "No response"
         )
 
+    # ------------------------------------------------------------------
+    # Convenience wrappers
+    # ------------------------------------------------------------------
+    def chat(self, prompt: str, **kw) -> str:
+        return self.run(prompt, **kw)
 
-# ======================================================
-# EXAMPLE USAGE
-# ======================================================
+    def analyze(self, prompt: str, files=None, urls=None, **kw) -> str:
+        return self.run(prompt, files=files, urls=urls, **kw)
+
+
+# ======================================================================
+# Example usage — runs all 7 tests when executed directly
+# ======================================================================
 if __name__ == "__main__":
-    
-    # 1. URL Setup & Check
-    base_url = "https://xxxx-xxxx.trycloudflare.com"
-    
-    if "xxxx-xxxx" in base_url:
-        print("[WARNING] Placeholder URL detected!")
-        base_url = input("> Please paste your actual TryCloudflare URL: ").strip()
-        while not base_url.startswith("http"):
-            print("[ERROR] Invalid URL. It should start with https://")
-            base_url = input("> Please paste your actual TryCloudflare URL: ").strip()
+    # 1. Setup
+    BASE_URL = "https://xxxx-xxxx.trycloudflare.com"
+    if "xxxx-xxxx" in BASE_URL:
+        BASE_URL = input("Paste your TryCloudflare URL: ").strip()
+        while not BASE_URL.startswith("http"):
+            print("Must start with https://")
+            BASE_URL = input("Paste your TryCloudflare URL: ").strip()
 
-    client = QwenClient(base_url=base_url, api_key="")
-    print(f"\n[INFO] Connected to: {client.base_url}\n")
-    print("="*50)
+    client = QwenClient(base_url=BASE_URL)
+    client.connect()  # health check + fetch real model name
+    print("=" * 50 + "\n")
 
-    # =====================================================
-    # 1. TEXT ONLY
-    # =====================================================
-    print("\n[1/7] --- TEXT ONLY (Thinking Disabled) ---")
-    print(client.run("What is the capital of France?", thinking=False))
+    # ── Test 1: text only ────────────────────────────────────
+    print("[1/7] Text only")
+    print(client.run("What is the capital of France?", temperature=0))
     print("-" * 40)
 
-    # =====================================================
-    # 2. IMAGE (URL)
-    # =====================================================
-    print("\n[2/7] --- IMAGE URL ---")
-    print("Analyzing remote image...")
+    # ── Test 2: image URL ────────────────────────────────────
+    print("\n[2/7] Image URL")
     print(client.run(
-        prompt="Describe this image.",
-        urls=[
-            "https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/test-img.jpg"
-        ]
+        "Describe this image.",
+        urls=["https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/test-img.jpg"],
     ))
     print("-" * 40)
 
-    # =====================================================
-    # 3. PDF
-    # =====================================================
-    print("\n[3/7] --- PDF URL ---")
-    print("Extracting and summarizing remote PDF...")
+    # ── Test 3: PDF URL ──────────────────────────────────────
+    print("\n[3/7] PDF URL")
     print(client.run(
-        prompt="Summarize this PDF.",
-        urls=[
-            "https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/report-pdf.pdf"
-        ]
+        "Summarise this PDF in 3 bullet points.",
+        urls=["https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/report-pdf.pdf"],
     ))
     print("-" * 40)
 
-    # =====================================================
-    # 4. VIDEO
-    # =====================================================
-    print("\n[4/7] --- VIDEO URL ---")
-    print("Analyzing remote video file...")
+    # ── Test 4: video URL ────────────────────────────────────
+    print("\n[4/7] Video URL")
     print(client.run(
-        prompt="Describe this video.",
-        urls=[
-            "https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/sample-10s-360p.mp4"
-        ]
+        "Describe what is happening in this video.",
+        urls=["https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/sample-10s-360p.mp4"],
     ))
     print("-" * 40)
 
-    # =====================================================
-    # 5. LOCAL FILES
-    # =====================================================
-    print("\n[5/7] --- LOCAL FILES ---")
+    # ── Test 5: local files ──────────────────────────────────
+    print("\n[5/7] Local files")
     try:
-        print("Analyzing local files...")
         print(client.run(
-            prompt="Analyze all local files.",
-            files=[
-                "test-img.jpg",
-                "report-pdf.pdf"
-            ]
+            "Analyse both files.",
+            files=["test-img.jpg", "report-pdf.pdf"],
         ))
     except FileNotFoundError:
-        print("[SKIPPED] You do not have 'test-img.jpg' or 'report-pdf.pdf' saved in this folder.")
+        print("[SKIPPED] test-img.jpg / report-pdf.pdf not found locally.")
     print("-" * 40)
 
-    # =====================================================
-    # 6. BASE64 DIRECT
-    # =====================================================
-    print("\n[6/7] --- BASE64 IMAGE ---")
-    # A valid tiny 1x1 pixel PNG so the server does not crash
-    valid_base64_img = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg=="
-    print("Analyzing direct base64 string (1x1 pixel)...")
-    print(client.run(
-        prompt="What color is this image?",
-        files=[valid_base64_img]
-    ))
+    # ── Test 6: base64 image ─────────────────────────────────
+    print("\n[6/7] Base64 image (1×1 pixel)")
+    tiny_png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg=="
+    print(client.run("What color is this image?", files=[tiny_png]))
     print("-" * 40)
 
-    # =====================================================
-    # 7. STREAMING
-    # =====================================================
-    print("\n[7/7] --- STREAMING (Thinking Enabled) ---")
-    print("Writing story...\n")
-    client.run(
-        prompt="Write a 3-sentence sci-fi story about a robot.",
-        stream=True,
-        thinking=True
-    )
+    # ── Test 7: streaming ────────────────────────────────────
+    print("\n[7/7] Streaming text")
+    client.run("Write a 3-sentence sci-fi story about a robot.", stream=True)
     print("\n" + "-" * 40)
-    print("\n[SUCCESS] All tests completed successfully!")
+
+    print("\n[SUCCESS] All tests done.")
 ```
 
 ---
