@@ -4,13 +4,15 @@
 # ============================================================
 
 COLAB_CONFIG: dict = {
-    "model":                  "4b",   # "2b" or "4b"
+    "model":                  "4b",       # "2b" or "4b"
     "max_tokens":             8192,
     "max_model_len":          8192,
-    "api_key":                "",     # leave empty = no auth
+    "api_key":                "",         # leave empty = no auth
     "rate_limit_rpm":         60,
     "drive_cache_dir":        "/content/drive/MyDrive/qwen35_cache",
-    "gpu_memory_utilization": 0.85,
+    "gpu_memory_utilization": 0.75,       # lowered — 4B needs headroom on T4
+    "clear_cache":            False,      # set True only to force a fresh re-download
+    "offload_folder":         "/tmp/qwen_offload",  # disk spill if VRAM full
 }
 
 import base64, gc, logging, os, re, sys, time, json
@@ -37,6 +39,14 @@ gc.collect()
 # ── 1. Cache ──────────────────────────────────────────────────
 def setup_cache() -> Path:
     drive_cache = Path(COLAB_CONFIG["drive_cache_dir"])
+
+    # Clear old weights if requested (e.g. switching model size)
+    if COLAB_CONFIG.get("clear_cache") and drive_cache.exists():
+        import shutil
+        log.info(f"Clearing old cache at {drive_cache} ...")
+        shutil.rmtree(str(drive_cache), ignore_errors=True)
+        print(f"[Cache] Deleted {drive_cache} — will re-download fresh.")
+
     if Path("/content/drive/MyDrive").exists():
         drive_cache.mkdir(parents=True, exist_ok=True)
         os.environ["HF_HOME"] = str(drive_cache)
@@ -88,15 +98,39 @@ import torch
 import fitz  # PyMuPDF
 from transformers import AutoProcessor, AutoModelForImageTextToText, TextIteratorStreamer
 
-# Correct class for Qwen3.5 (replaces AutoModelForCausalLM)
+# GPU check — fail fast with a clear message
+HAS_GPU = torch.cuda.is_available()
+if not HAS_GPU:
+    print("\n" + "!" * 60)
+    print("  WARNING: No GPU detected — running on CPU.")
+    print("  Inference will be very slow (minutes per response).")
+    print("  Fix: Runtime -> Change runtime type -> T4 GPU -> Save")
+    print("!" * 60 + "\n")
+else:
+    gpu_name = torch.cuda.get_device_name(0)
+    gpu_gb   = torch.cuda.get_device_properties(0).total_memory / 1e9
+    print(f"  GPU: {gpu_name}  ({gpu_gb:.1f} GB VRAM)")
+
 processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
 tokenizer = processor.tokenizer  # for TextIteratorStreamer
 
+if HAS_GPU:
+    real_gpu_gb = int(torch.cuda.get_device_properties(0).total_memory / 1e9)
+    load_kwargs = dict(
+        device_map     = "auto",
+        dtype          = torch.float16,
+        offload_folder = COLAB_CONFIG["offload_folder"],
+        max_memory     = {
+            0:     f"{int(COLAB_CONFIG['gpu_memory_utilization'] * real_gpu_gb)}GiB",
+            "cpu": "12GiB",
+        },
+    )
+else:
+    # CPU fallback — float32 only (float16 unsupported on CPU)
+    load_kwargs = dict(device_map="cpu", dtype=torch.float32)
+
 model = AutoModelForImageTextToText.from_pretrained(
-    model_path,
-    device_map="auto",
-    torch_dtype=torch.float16,
-    trust_remote_code=True,
+    model_path, trust_remote_code=True, **load_kwargs
 ).eval()
 
 log.info(f"Model device: {next(model.parameters()).device}")
@@ -156,14 +190,40 @@ async def source_to_content_blocks(source: str) -> list:
     return [{"type": "text", "text": source}]
 
 # ── 6. Core inference ─────────────────────────────────────────
+def normalise_messages(messages: list) -> list:
+    """
+    Ensure every message's content is a list of typed blocks.
+    apply_chat_template requires list[dict], not a plain string.
+    Also upgrades legacy {"image":"..."} → {"type":"image","url":"..."}.
+    """
+    out = []
+    for msg in messages:
+        raw = msg.get("content", "")
+        if isinstance(raw, str):
+            # Plain string → single text block
+            raw = [{"type": "text", "text": raw}]
+        elif isinstance(raw, list):
+            fixed = []
+            for block in raw:
+                if isinstance(block, str):
+                    block = {"type": "text", "text": block}
+                elif isinstance(block, dict) and "type" not in block:
+                    if "image" in block:
+                        block = {"type": "image", "url": block["image"]}
+                    elif "video" in block:
+                        block = {"type": "video", "url": block["video"]}
+                fixed.append(block)
+            raw = fixed
+        out.append({**msg, "content": raw})
+    return out
+
 def build_inputs(messages: list) -> dict:
     """
-    Use processor.apply_chat_template — the correct Qwen3.5 API.
+    Normalise then run processor.apply_chat_template.
     Handles vision tokens internally; no process_vision_info needed.
-    No mm_token_type_ids issue with this path.
     """
     return processor.apply_chat_template(
-        messages,
+        normalise_messages(messages),
         add_generation_prompt=True,
         tokenize=True,
         return_dict=True,
@@ -271,23 +331,7 @@ async def chat_completions(request: Request):
     max_tok = int(body.get("max_tokens",   COLAB_CONFIG["max_tokens"]))
     temp    = float(body.get("temperature", 0.7))
 
-    # Normalise legacy {"image": "..."} blocks to HF standard {"type":"image","url":"..."}
-    normalised = []
-    for msg in msgs:
-        raw = msg.get("content", "")
-        if isinstance(raw, list):
-            fixed = []
-            for block in raw:
-                if isinstance(block, dict) and "type" not in block:
-                    if "image" in block:
-                        block = {"type": "image", "url": block["image"]}
-                    elif "video" in block:
-                        block = {"type": "video", "url": block["video"]}
-                fixed.append(block)
-            raw = fixed
-        normalised.append({**msg, "content": raw})
-
-    inputs = build_inputs(normalised)
+    inputs = build_inputs(msgs)  # normalise_messages() handles all content formats
 
     if stream:
         streamer = run_generation_stream(inputs, max_tok, temp)
@@ -328,6 +372,20 @@ try:
         log.info(f"Server health: {r.read().decode()}")
 except Exception as e:
     log.warning(f"Health check failed (server may still be starting): {e}")
+
+# ── Install cloudflared if missing ────────────────────────────
+def ensure_cloudflared():
+    import shutil, stat
+    if shutil.which("cloudflared"):
+        return
+    log.info("cloudflared not found — downloading...")
+    url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+    dest = Path("/usr/local/bin/cloudflared")
+    subprocess.check_call(["wget", "-q", "-O", str(dest), url])
+    dest.chmod(dest.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    log.info("cloudflared installed.")
+
+ensure_cloudflared()
 
 print("\n[Tunnel] Starting cloudflared...")
 proc = subprocess.Popen(
