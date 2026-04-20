@@ -1,14 +1,14 @@
-````markdown
-# Qwen3.5 Python Client — Quick Start (Multimodal + Chat)
 
-A clean, OpenRouter-style Python client for your Qwen3.5 server.
+# Qwen3.5 Python Client — Single File Quick Start
 
-Supports:
+A simple single-file Python client for your Qwen3.5 server.
+
+It supports:
 - Text chat
 - Images, PDFs, videos
-- Local files + URLs
+- Local files and URLs
 - Streaming responses
-- Automatic endpoint routing
+- Automatic routing to the correct endpoint
 
 ---
 
@@ -16,13 +16,13 @@ Supports:
 
 ```bash
 pip install requests
-````
+```
 
 ---
 
-## The Client
+## Single File Code
 
-Save as `client.py`:
+Save this as `qwen_client.py`:
 
 ```python
 import base64
@@ -76,7 +76,6 @@ class QwenClient:
         all_files = self._prepare_files(files, urls)
 
         headers = {"Content-Type": "application/json"}
-
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
@@ -111,7 +110,6 @@ class QwenClient:
         if not response.ok:
             raise Exception(response.text)
 
-        # STREAM MODE
         if stream:
             full = ""
 
@@ -131,9 +129,11 @@ class QwenClient:
 
                 try:
                     chunk = requests.utils.json.loads(raw)
-                    delta = chunk.get("choices", [{}])[0] \
-                                 .get("delta", {}) \
-                                 .get("content", "")
+                    delta = (
+                        chunk.get("choices", [{}])[0]
+                        .get("delta", {})
+                        .get("content", "")
+                    )
 
                     print(delta, end="", flush=True)
                     full += delta
@@ -144,7 +144,6 @@ class QwenClient:
             print()
             return full
 
-        # NORMAL MODE
         data = response.json()
 
         return (
@@ -154,105 +153,75 @@ class QwenClient:
             or data.get("error")
             or "No response"
         )
+
+
+# ======================================================
+# EXAMPLE USAGE
+# ======================================================
+if __name__ == "__main__":
+    client = QwenClient(
+        base_url="https://xxxx-xxxx.trycloudflare.com",
+        api_key=""
+    )
+
+    # Example 1: text only
+    print(client.run("What is the capital of France?"))
+
+    # Example 2: local files
+    # print(client.run(
+    #     prompt="Analyze all inputs and give a summary.",
+    #     files=["image.jpg", "document.pdf", "video.mp4"],
+    #     task="reasoning"
+    # ))
+
+    # Example 3: URLs
+    # print(client.run(
+    #     prompt="Describe this image.",
+    #     urls=["https://example.com/chart.png"]
+    # ))
+
+    # Example 4: streaming
+    # client.run("Write a short story about space.", stream=True)
 ```
-
----
-
-## Basic Usage
-
-```python
-from client import QwenClient
-
-client = QwenClient(
-    base_url="https://xxxx-xxxx.trycloudflare.com",
-    api_key=""
-)
-
-response = client.run(
-    prompt="Explain quantum computing simply."
-)
-
-print(response)
-```
-
----
-
-## Multimodal Example (Files + URLs)
-
-```python
-response = client.run(
-    prompt="Analyze all inputs and give a summary.",
-
-    files=[
-        "image.jpg",
-        "document.pdf",
-        "video.mp4"
-    ],
-
-    urls=[
-        "https://example.com/chart.png"
-    ],
-
-    task="reasoning"
-)
-
-print(response)
-```
-
----
-
-## Streaming Output (Live Tokens)
-
-```python
-client.run(
-    prompt="Write a story about space.",
-    stream=True
-)
-```
-
----
-
-## How It Works
-
-| Input Type | Endpoint Used          |
-| ---------- | ---------------------- |
-| Text only  | `/v1/chat/completions` |
-| With files | `/v1/agent`            |
-
----
-
-## Task Modes
-
-| Task        | Description                |
-| ----------- | -------------------------- |
-| `general`   | Normal Q&A, summaries      |
-| `coding`    | Code generation, debugging |
-| `reasoning` | Complex analysis, math     |
-
----
-
-## Supported Inputs
-
-| Type   | Local File     | URL |
-| ------ | -------------- | --- |
-| Image  | jpg, png, gif  | ✓   |
-| PDF    | pdf            | ✓   |
-| Video  | mp4, webm, mov | ✓   |
-| Base64 | auto-generated | ✓   |
-
----
-
-## Notes
-
-* Local files are automatically converted to base64
-* URLs are sent directly (no download needed)
-* No plugins required (PDF parsing handled server-side)
-* Works with any Qwen3.5 server instance
 
 ---
 
 ## Run
 
 ```bash
-python your_script.py
+python qwen_client.py
+```
+
+---
+
+## Task Options
+
+| Task        | Use for                              |
+| ----------- | ------------------------------------ |
+| `general`   | Normal chat, summaries, descriptions |
+| `coding`    | Code generation and debugging        |
+| `reasoning` | Math, comparisons, deeper analysis   |
+
+---
+
+## Supported Inputs
+
+| Type  | Local file | URL |
+| ----- | ---------- | --- |
+| Image | ✓          | ✓   |
+| PDF   | ✓          | ✓   |
+| Video | ✓          | ✓   |
+
+---
+
+## Notes
+
+* Local files are converted to base64 automatically
+* URLs are sent directly
+* If files are present, the client uses `/v1/agent`
+* If no files are present, it uses `/v1/chat/completions`
+
+```
+
+If you want, I can also :contentReference[oaicite:0]{index=0}.
 ```
