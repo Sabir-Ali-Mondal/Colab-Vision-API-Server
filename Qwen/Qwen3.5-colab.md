@@ -1,85 +1,104 @@
+```markdown
 # Qwen3.5 Server Setup & API Quick Start Guide
 
-Welcome to your personal Qwen3.5 server. This guide covers how to start your server in Google Colab (or locally), how to get your connection credentials, and how to use the OpenAI-compatible API and Multimodal Agent.
+Welcome to your personal Qwen3.5 server. This guide covers how to start your server in Google Colab, how to get your public URL, and how to use the OpenAI-compatible API and Multimodal Agent.
 
 ---
 
 ### 1. Setup & Running the Server
 
-**Running in Google Colab (Recommended)**
-1. Go to Google Colab and create a New Notebook.
-2. Go to **Runtime > Change runtime type** and select a **T4 GPU**. Click Save.
-3. Paste the entire `server.py` script into the first cell.
-4. Near the top of the script, find the `COLAB_CONFIG` block. Set your desired API key here to secure your server:
-   ```python
-   COLAB_CONFIG: dict = {
-       "model":           "4b",
-       "api_key":         "your_secret_password_here", # Set your key here
-       # ... other settings
-   }
-   ```
-5. Click the **Play** button on the cell to run it. 
-6. The first run will take 5-10 minutes to install dependencies (vLLM) and download the Qwen model.
-7. ```!cat /tmp/vllm.log``` for logs.
+**Requirements**
+- Google Colab with **T4 GPU** runtime (free tier works)
+- Google Drive mounted (for model caching — saves ~14 min on every restart after first run)
 
-**Running on a Local Linux PC / Cloud VM**
-1. Save the code to a file named `server.py`.
-2. Make it executable: `chmod +x server.py`
-3. Run it via terminal, passing your API key as an argument:
-   ```bash
-   ./server.py --model 4b --api-key your_secret_password_here
-   ```
+**Steps**
+1. Go to [colab.research.google.com](https://colab.research.google.com) and create a new notebook.
+2. Go to **Runtime → Change runtime type → T4 GPU → Save**.
+3. Paste the full `server.py` script into a cell.
+4. Edit the `COLAB_CONFIG` block at the top:
 
----
-
-### 2. Getting Your Link and Key
-
-Once the server has finished downloading and starting, it will generate a secure public tunnel via Cloudflare. Scroll to the bottom of the output logs. 
-
-You are looking for a banner that looks like this:
-```text
-==================================================================
-  [LINK] PUBLIC URL       : https://random-words-here.trycloudflare.com
-  chat/completions        : https://random-words-here.trycloudflare.com/v1/chat/completions
-  agent (multimodal)      : https://random-words-here.trycloudflare.com/v1/agent
-==================================================================
+```python
+COLAB_CONFIG: dict = {
+    "model":                  "4b",   # "2b" (~4 GB) or "4b" (~8 GB)
+    "max_tokens":             8192,
+    "thinking":               True,   # True = reasoning mode, False = fast
+    "max_model_len":          8192,   # safe for T4 15 GB VRAM
+    "api_key":                "",     # set a password to secure your server
+    "rate_limit_rpm":         60,     # requests per minute per IP
+    "tunnel":                 True,   # False = local only, no public URL
+    "drive_cache_dir":        "/content/drive/MyDrive/qwen35_cache",
+    "gpu_memory_utilization": 0.85,
+}
 ```
 
-*   **Your Base URL** is the `PUBLIC URL` link with `/v1` added to the end.
-*   **Your API Key** is whatever you typed into the `COLAB_CONFIG` or passed via the `--api-key` argument.
+5. Run the cell. Progress prints step by step.
+
+**Expected startup times**
+
+| Run | Time |
+|---|---|
+| First run (downloading model) | ~14–18 min |
+| Second run onwards (cached) | ~3–4 min |
+
+> **Why so long first time?** The 4B model is ~8 GB. vLLM downloads it, loads it into GPU VRAM, and warms up the inference engine. This is a one-time cost — Google Drive caches the model for all future runs.
+
+6. When ready, the output shows:
+
+```
+============================================================
+  PUBLIC URL           : https://xxxx-xxxx.trycloudflare.com
+  /v1/chat/completions : https://xxxx-xxxx.trycloudflare.com/v1/chat/completions
+  /v1/agent            : https://xxxx-xxxx.trycloudflare.com/v1/agent
+  /v1/models           : https://xxxx-xxxx.trycloudflare.com/v1/models
+  /health              : https://xxxx-xxxx.trycloudflare.com/health
+============================================================
+```
+
+**To view raw vLLM logs:**
+```python
+!cat /tmp/vllm.log
+```
 
 ---
 
-### 3. Connection Details
+### 2. Important Notes for Colab Free Tier
 
-To connect your existing apps, scripts, or UI clients (like Chatbox or AnythingLLM), use these details:
+- **Do NOT kill port 8080** — Colab uses it internally. The server runs on port `8090` to avoid conflicts.
+- **Do NOT run `fuser -k` or `kill -9`** on any port — it will disconnect your runtime.
+- **GPU session lasts ~4–5 hours** on free tier. After expiry, re-run the cell — the model loads from Drive cache in ~3–4 min.
+- If the runtime disconnects unexpectedly, check **Runtime → View resources** to confirm GPU is still allocated before debugging anything else.
 
-* **Base URL:** `https://<YOUR_CLOUDFLARE_URL>.trycloudflare.com/v1`
-* **API Key:** `<YOUR_API_KEY>` *(or leave empty if you didn't set one)*
-* **Available Models:** `"4b"` or `"2b"`
+---
+
+### 3. Getting Your Link and Key
+
+Scroll to the bottom of the cell output after startup. You will see the public URL banner shown above.
+
+- **Base URL:** `https://<YOUR_URL>.trycloudflare.com/v1`
+- **API Key:** whatever you set in `COLAB_CONFIG["api_key"]` (leave empty string `""` for open access)
+
+> The Cloudflare URL changes every time you restart the server. Save the new URL after each restart.
 
 ---
 
 ### 4. Standard Chat Completions (OpenAI Compatible)
-
-Because the server uses standard formatting, you can use the official OpenAI SDKs without changing your code logic.
 
 **Python** (`pip install openai`)
 ```python
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="https://<YOUR_CLOUDFLARE_URL>.trycloudflare.com/v1",
-    api_key="your_api_key_here" # Use "empty" if no key is set
+    base_url="https://<YOUR_URL>.trycloudflare.com/v1",
+    api_key="your_api_key_here"  # use "empty" if no key set
 )
 
 response = client.chat.completions.create(
-    model="4b",
+    model="Qwen/Qwen3.5-4B",
     messages=[
         {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Write a python script to reverse a string."}
+        {"role": "user",   "content": "Write a Python script to reverse a string."}
     ],
-    stream=True # Set to True for real-time typewriter effect
+    stream=True
 )
 
 for chunk in response:
@@ -91,86 +110,125 @@ for chunk in response:
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
-  baseURL: 'https://<YOUR_CLOUDFLARE_URL>.trycloudflare.com/v1',
-  apiKey: 'your_api_key_here' // Use "empty" if no key is set
+  baseURL: 'https://<YOUR_URL>.trycloudflare.com/v1',
+  apiKey: 'your_api_key_here'
 });
 
 async function main() {
-  const completion = await openai.chat.completions.create({
-    model: '4b',
+  const res = await openai.chat.completions.create({
+    model: 'Qwen/Qwen3.5-4B',
     messages: [{ role: 'user', content: 'What is the capital of France?' }],
   });
-  console.log(completion.choices[0].message.content);
+  console.log(res.choices[0].message.content);
 }
 main();
 ```
 
 **cURL**
 ```bash
-curl "https://<YOUR_CLOUDFLARE_URL>.trycloudflare.com/v1/chat/completions" \
+curl "https://<YOUR_URL>.trycloudflare.com/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your_api_key_here" \
   -d '{
-    "model": "4b",
+    "model": "Qwen/Qwen3.5-4B",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
 
+**Quick test (no dependencies)**
+```python
+import urllib.request, json
+
+url  = "https://<YOUR_URL>.trycloudflare.com/v1/chat/completions"
+body = json.dumps({
+    "messages": [{"role": "user", "content": "Hello! Who are you?"}],
+    "max_tokens": 200
+}).encode()
+
+req  = urllib.request.Request(
+    url, data=body, headers={"Content-Type": "application/json"})
+data = json.loads(urllib.request.urlopen(req, timeout=60).read())
+print(data["choices"][0]["message"]["content"])
+```
+
 ---
 
-### 5. Multimodal Agent (Images, Videos, & PDFs)
+### 5. Multimodal Agent (Images, Videos & PDFs)
 
-Your server includes a custom `/v1/agent` endpoint that acts like OpenRouter. You can pass raw URLs, base64 strings, or file paths, and the server will automatically extract the text (from PDFs) or frames (from Video/Images) before passing it to Qwen3.5.
+The `/v1/agent` endpoint accepts any combination of files and a text prompt. The server handles downloading, decoding, and PDF text extraction automatically.
 
-**Node.js (Fetch)**
+**Python**
+```python
+import requests
+
+response = requests.post(
+    "https://<YOUR_URL>.trycloudflare.com/v1/agent",
+    headers={"Authorization": "Bearer your_api_key_here"},
+    json={
+        "prompt": "Read this invoice and extract the total amount.",
+        "files":  ["https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"],
+        "task":   "general"   # "general" | "coding" | "reasoning"
+    }
+)
+print(response.json()["choices"][0]["message"]["content"])
+```
+
+**Node.js**
 ```javascript
-const response = await fetch("https://<YOUR_CLOUDFLARE_URL>.trycloudflare.com/v1/agent", {
+const res = await fetch("https://<YOUR_URL>.trycloudflare.com/v1/agent", {
   method: "POST",
-  headers: { 
-      "Content-Type": "application/json",
-      "Authorization": "Bearer your_api_key_here" 
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer your_api_key_here"
   },
   body: JSON.stringify({
     prompt: "Analyze these files and summarize them.",
     files: [
-        "https://example.com/chart.png",           // Image URL
-        "https://example.com/report.pdf",          // PDF URL
-        "data:video/mp4;base64,AAAAIGZ0eX..."      // Base64 Video
+      "https://example.com/chart.png",       // image URL
+      "https://example.com/report.pdf",      // PDF URL
+      "data:video/mp4;base64,AAAAIGZ0eX..."  // base64 video
     ],
-    task: "reasoning", // Options: "general", "coding", "reasoning"
+    task: "reasoning",
     stream: false
   })
 });
-
-const data = await response.json();
+const data = await res.json();
 console.log(data.choices[0].message.content);
 ```
 
-**Python (Requests)**
-```python
-import requests
+**Supported file inputs**
 
-url = "https://<YOUR_CLOUDFLARE_URL>.trycloudflare.com/v1/agent"
-headers = {"Authorization": "Bearer your_api_key_here"}
-
-payload = {
-    "prompt": "Read this invoice and extract the total amount.",
-    "files": ["https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"],
-    "task": "general"
-}
-
-response = requests.post(url, json=payload, headers=headers)
-print(response.json()["choices"][0]["message"]["content"])
-```
+| Type | Example |
+|---|---|
+| Image URL | `https://example.com/photo.png` |
+| PDF URL | `https://example.com/report.pdf` |
+| Video URL | `https://example.com/clip.mp4` |
+| Base64 data URL | `data:image/jpeg;base64,/9j/4AAQ...` |
+| Local file path | `/content/myfile.pdf` |
 
 ---
 
-### 6. Available Endpoints Overview
+### 6. Endpoints Reference
 
 | Endpoint | Method | Description |
-| :--- | :--- | :--- |
-| `/v1/chat/completions` | `POST` | Standard OpenAI text/vision chat logic. |
-| `/v1/agent` | `POST` | Universal file handler (Images, PDFs, Video, URLs). |
-| `/v1/models` | `GET` | Returns list of available models (useful for UI dropdowns). |
-| `/health` | `GET` | Check server uptime, VRAM status, and total requests handled. |
-| `/logs` | `GET` | Fetch the last 100 lines of the proxy server logs (requires Auth). |
+|---|---|---|
+| `/v1/chat/completions` | POST | OpenAI-compatible chat — text, image, streaming |
+| `/v1/agent` | POST | Multimodal agent — images, PDFs, video, URLs |
+| `/v1/models` | GET | List available models |
+| `/health` | GET | Server status, uptime, VRAM, request count |
+| `/logs` | GET | Last 100 proxy log lines (requires auth if key set) |
+| `/logs/vllm` | GET | Last 100 raw vLLM engine log lines |
+
+---
+
+### 7. Troubleshooting
+
+| Problem | Cause | Fix |
+|---|---|---|
+| Runtime disconnects on startup | Port conflict (8080 used by Colab) | Server already uses 8090 — do not kill any ports |
+| `nvidia-smi not found` | CPU runtime | Runtime → Change runtime type → T4 GPU |
+| vLLM crashes immediately | Wrong flag name in old vLLM | Already fixed — `--no-enable-log-requests` |
+| Timeout after 900s | Old timeout value | Already fixed — timeout is 1200s |
+| Cloudflare URL not showing | Tunnel took >90s | Re-run cell — usually resolves itself |
+| Model slow on second run | Drive not mounted | Make sure Drive mounts at step 1 |
+```
