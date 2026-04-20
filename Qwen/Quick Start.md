@@ -28,6 +28,7 @@ Save this as `qwen_client.py`:
 import base64
 import mimetypes
 import requests
+import json
 from pathlib import Path
 
 
@@ -39,10 +40,16 @@ class QwenClient:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
 
+    # -----------------------------
+    # Encode local file → base64
+    # -----------------------------
     def _encode_file(self, path: str) -> str:
         path = Path(path)
-        mime, _ = mimetypes.guess_type(path)
 
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+
+        mime, _ = mimetypes.guess_type(path)
         if mime is None:
             mime = "application/octet-stream"
 
@@ -51,18 +58,33 @@ class QwenClient:
 
         return f"data:{mime};base64,{b64}"
 
+    # -----------------------------
+    # Prepare files (paths + URLs + base64)
+    # -----------------------------
     def _prepare_files(self, files=None, urls=None):
         output = []
 
         if files:
             for f in files:
-                output.append(self._encode_file(f))
+                # Already base64
+                if isinstance(f, str) and f.startswith("data:"):
+                    output.append(f)
+
+                # Local file path
+                else:
+                    output.append(self._encode_file(f))
 
         if urls:
-            output.extend(urls)
+            for u in urls:
+                if not isinstance(u, str):
+                    raise ValueError("URL must be a string")
+                output.append(u)
 
         return output
 
+    # -----------------------------
+    # MAIN RUN
+    # -----------------------------
     def run(
         self,
         prompt: str,
@@ -75,10 +97,14 @@ class QwenClient:
     ):
         all_files = self._prepare_files(files, urls)
 
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+        }
+
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
+        # Decide endpoint
         use_agent = len(all_files) > 0
 
         if use_agent:
@@ -99,52 +125,68 @@ class QwenClient:
                 "stream": stream,
             }
 
-        response = requests.post(
-            self.base_url + endpoint,
-            headers=headers,
-            json=payload,
-            stream=stream,
-            timeout=300,
-        )
+        try:
+            response = requests.post(
+                self.base_url + endpoint,
+                headers=headers,
+                json=payload,
+                stream=stream,
+                timeout=300,
+            )
+        except Exception as e:
+            raise Exception(f"Connection failed: {e}")
 
         if not response.ok:
-            raise Exception(response.text)
+            raise Exception(f"API Error: {response.text}")
 
+        # -----------------------------
+        # STREAM MODE
+        # -----------------------------
         if stream:
             full = ""
 
-            for line in response.iter_lines():
-                if not line:
-                    continue
+            try:
+                for line in response.iter_lines():
+                    if not line:
+                        continue
 
-                line = line.decode()
+                    line = line.decode("utf-8", errors="ignore")
 
-                if not line.startswith("data:"):
-                    continue
+                    if not line.startswith("data:"):
+                        continue
 
-                raw = line[5:].strip()
+                    raw = line[5:].strip()
 
-                if raw == "[DONE]":
-                    break
+                    if raw == "[DONE]":
+                        break
 
-                try:
-                    chunk = requests.utils.json.loads(raw)
-                    delta = (
-                        chunk.get("choices", [{}])[0]
-                        .get("delta", {})
-                        .get("content", "")
-                    )
+                    try:
+                        chunk = json.loads(raw)
+                        delta = (
+                            chunk.get("choices", [{}])[0]
+                            .get("delta", {})
+                            .get("content", "")
+                        )
 
-                    print(delta, end="", flush=True)
-                    full += delta
+                        print(delta, end="", flush=True)
+                        full += delta
 
-                except Exception:
-                    pass
+                    except Exception:
+                        continue
+
+            except Exception as e:
+                print(f"\n[Stream Error] {e}")
 
             print()
             return full
 
-        data = response.json()
+        # -----------------------------
+        # NORMAL MODE
+        # -----------------------------
+        try:
+            data = response.json()
+        except Exception:
+            raise Exception("Invalid JSON response")
 
         return (
             data.get("choices", [{}])[0]
@@ -164,24 +206,69 @@ if __name__ == "__main__":
         api_key=""
     )
 
-    # Example 1: text only
+    # =====================================================
+    # 1. TEXT ONLY
+    # =====================================================
+    print("\n--- TEXT ONLY ---\n")
     print(client.run("What is the capital of France?"))
 
-    # Example 2: local files
-    # print(client.run(
-    #     prompt="Analyze all inputs and give a summary.",
-    #     files=["image.jpg", "document.pdf", "video.mp4"],
-    #     task="reasoning"
-    # ))
-
-    # Example 3: URLs
+    # =====================================================
+    # 2. IMAGE (URL)
+    # =====================================================
     # print(client.run(
     #     prompt="Describe this image.",
-    #     urls=["https://example.com/chart.png"]
+    #     urls=[
+    #         "https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/test-img.jpg"
+    #     ]
     # ))
 
-    # Example 4: streaming
-    # client.run("Write a short story about space.", stream=True)
+    # =====================================================
+    # 3. PDF
+    # =====================================================
+    # print(client.run(
+    #     prompt="Summarize this PDF.",
+    #     urls=[
+    #         "https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/report-pdf.pdf"
+    #     ]
+    # ))
+
+    # =====================================================
+    # 4. VIDEO
+    # =====================================================
+    # print(client.run(
+    #     prompt="Describe this video.",
+    #     urls=[
+    #         "https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/sample-10s-360p.mp4"
+    #     ]
+    # ))
+
+    # =====================================================
+    # 5. LOCAL FILES
+    # =====================================================
+    # print(client.run(
+    #     prompt="Analyze all local files.",
+    #     files=[
+    #         "test-img.jpg",
+    #         "report-pdf.pdf"
+    #     ]
+    # ))
+
+    # =====================================================
+    # 6. BASE64 DIRECT
+    # =====================================================
+    # base64_img = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ..."
+    # print(client.run(
+    #     prompt="Analyze this base64 image.",
+    #     files=[base64_img]
+    # ))
+
+    # =====================================================
+    # 7. STREAMING
+    # =====================================================
+    # client.run(
+    #     prompt="Write a short sci-fi story.",
+    #     stream=True
+    # )
 ```
 
 ---
