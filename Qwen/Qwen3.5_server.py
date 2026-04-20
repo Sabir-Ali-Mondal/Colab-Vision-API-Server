@@ -1,5 +1,5 @@
 # ============================================================
-# Qwen3.5
+# Qwen3.5 Gateway || Qwen3.5_server.py
 # ============================================================
 
 COLAB_CONFIG: dict = {
@@ -33,7 +33,7 @@ VLLM_PORT  = 8000
 PROXY_PORT = 8090  # 8080 is reserved by Colab
 
 print("=" * 55)
-print(" Qwen3.5 Gateway v5.0 starting ...")
+print(" Qwen3.5 Gateway starting ...")
 print("=" * 55 + "\n")
 
 gc.collect()
