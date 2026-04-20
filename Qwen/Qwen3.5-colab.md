@@ -81,6 +81,49 @@ Scroll to the bottom of the cell output after startup. You will see the public U
 
 ---
 
+
+### Test the server setup in local
+````python
+import urllib.request
+import json
+
+BASE_URL = "https://posted-thereby-insertion-necessarily.trycloudflare.com"
+API_KEY  = ""
+MODEL    = "Qwen/Qwen3.5-4B"
+
+def ask(question):
+    url     = f"{BASE_URL}/v1/chat/completions"
+    headers = {"Content-Type": "application/json"}
+    if API_KEY:
+        headers["Authorization"] = f"Bearer {API_KEY}"
+
+    body = json.dumps({
+        "model":      MODEL,
+        "messages":   [{"role": "user", "content": question}],
+        "max_tokens": 1000,
+        "chat_template_kwargs": {"enable_thinking": False}  # disable thinking mode
+    }).encode()
+
+    req  = urllib.request.Request(url, data=body, headers=headers)
+    resp = urllib.request.urlopen(req, timeout=120)
+    data = json.loads(resp.read())
+
+    # print full raw response so we can see what's returned
+    print("RAW:", json.dumps(data, indent=2))
+
+    content = data["choices"][0]["message"]["content"]
+    return content
+
+print("Testing server ...")
+print()
+reply = ask("Hello! Tell me a fun fact about space.")
+print("Qwen:", reply)
+````
+
+
+
+
+
 ### 4. Standard Chat Completions (OpenAI Compatible)
 
 **Python** (`pip install openai`)
