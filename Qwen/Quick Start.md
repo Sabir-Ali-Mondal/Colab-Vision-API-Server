@@ -1,10 +1,9 @@
-
 # Qwen3.5 Python Client — Single File Quick Start
 
-A simple single-file Python client for your Qwen3.5 server.
+A simple single-file Python client for your Qwen3.5 server. 
 
 It supports:
-- Text chat
+- Text chat (with Reasoning/Thinking toggle)
 - Images, PDFs, videos
 - Local files and URLs
 - Streaming responses
@@ -41,7 +40,7 @@ class QwenClient:
         self.api_key = api_key
 
     # -----------------------------
-    # Encode local file → base64
+    # Encode local file -> base64
     # -----------------------------
     def _encode_file(self, path: str) -> str:
         path = Path(path)
@@ -69,7 +68,6 @@ class QwenClient:
                 # Already base64
                 if isinstance(f, str) and f.startswith("data:"):
                     output.append(f)
-
                 # Local file path
                 else:
                     output.append(self._encode_file(f))
@@ -94,6 +92,7 @@ class QwenClient:
         stream=False,
         temperature=0.7,
         max_tokens=1024,
+        thinking=True,
     ):
         all_files = self._prepare_files(files, urls)
 
@@ -114,6 +113,8 @@ class QwenClient:
                 "files": all_files,
                 "task": task,
                 "stream": stream,
+                "thinking": thinking,
+                "max_tokens": max_tokens,
             }
         else:
             endpoint = "/v1/chat/completions"
@@ -123,6 +124,7 @@ class QwenClient:
                 "temperature": temperature,
                 "max_tokens": max_tokens,
                 "stream": stream,
+                "chat_template_kwargs": {"enable_thinking": thinking},
             }
 
         try:
@@ -137,7 +139,7 @@ class QwenClient:
             raise Exception(f"Connection failed: {e}")
 
         if not response.ok:
-            raise Exception(f"API Error: {response.text}")
+            raise Exception(f"API Error ({response.status_code}): {response.text}")
 
         # -----------------------------
         # STREAM MODE
@@ -168,8 +170,9 @@ class QwenClient:
                             .get("content", "")
                         )
 
-                        print(delta, end="", flush=True)
-                        full += delta
+                        if delta:
+                            print(delta, end="", flush=True)
+                            full += delta
 
                     except Exception:
                         continue
@@ -201,74 +204,109 @@ class QwenClient:
 # EXAMPLE USAGE
 # ======================================================
 if __name__ == "__main__":
-    client = QwenClient(
-        base_url="https://xxxx-xxxx.trycloudflare.com",
-        api_key=""
-    )
+    
+    # 1. URL Setup & Check
+    base_url = "https://xxxx-xxxx.trycloudflare.com"
+    
+    if "xxxx-xxxx" in base_url:
+        print("[WARNING] Placeholder URL detected!")
+        base_url = input("> Please paste your actual TryCloudflare URL: ").strip()
+        while not base_url.startswith("http"):
+            print("[ERROR] Invalid URL. It should start with https://")
+            base_url = input("> Please paste your actual TryCloudflare URL: ").strip()
+
+    client = QwenClient(base_url=base_url, api_key="")
+    print(f"\n[INFO] Connected to: {client.base_url}\n")
+    print("="*50)
 
     # =====================================================
     # 1. TEXT ONLY
     # =====================================================
-    print("\n--- TEXT ONLY ---\n")
-    print(client.run("What is the capital of France?"))
+    print("\n[1/7] --- TEXT ONLY (Thinking Disabled) ---")
+    print(client.run("What is the capital of France?", thinking=False))
+    print("-" * 40)
 
     # =====================================================
     # 2. IMAGE (URL)
     # =====================================================
-    # print(client.run(
-    #     prompt="Describe this image.",
-    #     urls=[
-    #         "https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/test-img.jpg"
-    #     ]
-    # ))
+    print("\n[2/7] --- IMAGE URL ---")
+    print("Analyzing remote image...")
+    print(client.run(
+        prompt="Describe this image.",
+        urls=[
+            "https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/test-img.jpg"
+        ]
+    ))
+    print("-" * 40)
 
     # =====================================================
     # 3. PDF
     # =====================================================
-    # print(client.run(
-    #     prompt="Summarize this PDF.",
-    #     urls=[
-    #         "https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/report-pdf.pdf"
-    #     ]
-    # ))
+    print("\n[3/7] --- PDF URL ---")
+    print("Extracting and summarizing remote PDF...")
+    print(client.run(
+        prompt="Summarize this PDF.",
+        urls=[
+            "https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/report-pdf.pdf"
+        ]
+    ))
+    print("-" * 40)
 
     # =====================================================
     # 4. VIDEO
     # =====================================================
-    # print(client.run(
-    #     prompt="Describe this video.",
-    #     urls=[
-    #         "https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/sample-10s-360p.mp4"
-    #     ]
-    # ))
+    print("\n[4/7] --- VIDEO URL ---")
+    print("Analyzing remote video file...")
+    print(client.run(
+        prompt="Describe this video.",
+        urls=[
+            "https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/sample-10s-360p.mp4"
+        ]
+    ))
+    print("-" * 40)
 
     # =====================================================
     # 5. LOCAL FILES
     # =====================================================
-    # print(client.run(
-    #     prompt="Analyze all local files.",
-    #     files=[
-    #         "test-img.jpg",
-    #         "report-pdf.pdf"
-    #     ]
-    # ))
+    print("\n[5/7] --- LOCAL FILES ---")
+    try:
+        print("Analyzing local files...")
+        print(client.run(
+            prompt="Analyze all local files.",
+            files=[
+                "test-img.jpg",
+                "report-pdf.pdf"
+            ]
+        ))
+    except FileNotFoundError:
+        print("[SKIPPED] You do not have 'test-img.jpg' or 'report-pdf.pdf' saved in this folder.")
+    print("-" * 40)
 
     # =====================================================
     # 6. BASE64 DIRECT
     # =====================================================
-    # base64_img = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ..."
-    # print(client.run(
-    #     prompt="Analyze this base64 image.",
-    #     files=[base64_img]
-    # ))
+    print("\n[6/7] --- BASE64 IMAGE ---")
+    # A valid tiny 1x1 pixel PNG so the server does not crash
+    valid_base64_img = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg=="
+    print("Analyzing direct base64 string (1x1 pixel)...")
+    print(client.run(
+        prompt="What color is this image?",
+        files=[valid_base64_img]
+    ))
+    print("-" * 40)
 
     # =====================================================
     # 7. STREAMING
     # =====================================================
-    # client.run(
-    #     prompt="Write a short sci-fi story.",
-    #     stream=True
-    # )
+    print("\n[7/7] --- STREAMING (Thinking Enabled) ---")
+    print("Writing story...\n")
+    client.run(
+        prompt="Write a 3-sentence sci-fi story about a robot.",
+        stream=True,
+        thinking=True
+    )
+    print("\n" + "-" * 40)
+    print("\n[SUCCESS] All tests completed successfully!")
 ```
 
 ---
@@ -278,6 +316,8 @@ if __name__ == "__main__":
 ```bash
 python qwen_client.py
 ```
+
+*When you run it, it will ask for your URL if you have not hardcoded it in the script, then automatically run through all 7 tests sequentially.*
 
 ---
 
@@ -295,15 +335,16 @@ python qwen_client.py
 
 | Type  | Local file | URL |
 | ----- | ---------- | --- |
-| Image | ✓          | ✓   |
-| PDF   | ✓          | ✓   |
-| Video | ✓          | ✓   |
+| Image | Yes        | Yes |
+| PDF   | Yes        | Yes |
+| Video | Yes        | Yes |
 
 ---
 
 ## Notes
 
-* Local files are converted to base64 automatically
-* URLs are sent directly
-* If files are present, the client uses `/v1/agent`
-* If no files are present, it uses `/v1/chat/completions`
+* Local files are converted to base64 automatically.
+* URLs are sent directly to the server to download.
+* If files are present, the client automatically uses the Multimodal `/v1/agent` endpoint.
+* If no files are present, it seamlessly routes to `/v1/chat/completions`.
+* To see the internal model thought process, leave `thinking=True`. To get just the final answer quickly, pass `thinking=False`.
