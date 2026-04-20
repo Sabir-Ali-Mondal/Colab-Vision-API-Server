@@ -217,48 +217,94 @@ def normalise_messages(messages: list) -> list:
         out.append({**msg, "content": raw})
     return out
 
+THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
 def build_inputs(messages: list) -> dict:
     """
     Normalise then run processor.apply_chat_template.
-    Handles vision tokens internally; no process_vision_info needed.
+    image_grid_thw is kept on CPU to avoid an nvrtc JIT bug on Colab T4
+    (libnvrtc-builtins missing triggers a crash in prod() kernel compilation).
+    All other tensors go to GPU as normal.
     """
-    return processor.apply_chat_template(
+    inputs = processor.apply_chat_template(
         normalise_messages(messages),
         add_generation_prompt=True,
         tokenize=True,
         return_dict=True,
         return_tensors="pt",
-    ).to(model.device)
+    )
+    # Move everything to GPU except image_grid_thw — that tensor only drives
+    # shape arithmetic inside the vision encoder and must stay on CPU to avoid
+    # the nvrtc reduction-kernel JIT crash on Colab T4.
+    result = {}
+    for k, v in inputs.items():
+        if isinstance(v, torch.Tensor):
+            result[k] = v.cpu() if k == "image_grid_thw" else v.to(model.device)
+        else:
+            result[k] = v
+    return result
+
+def _strip_think(text: str) -> str:
+    """Remove <think>...</think> blocks from model output."""
+    return THINK_RE.sub("", text).strip()
+
+def _gen_kwargs(inputs: dict, max_new_tokens: int, temperature: float) -> dict:
+    return dict(
+        **inputs,
+        max_new_tokens  = max_new_tokens,
+        temperature     = max(temperature, 0.01),
+        do_sample       = temperature > 0.05,
+        pad_token_id    = tokenizer.eos_token_id,
+    )
 
 def run_generation_sync(inputs: dict, max_new_tokens: int, temperature: float) -> str:
-    """Blocking generation. Returns decoded text only (no prompt)."""
+    """Blocking generation. Returns decoded text with <think> blocks stripped."""
     with torch.inference_mode():
-        out = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            temperature=max(temperature, 0.01),
-            do_sample=temperature > 0.05,
-            pad_token_id=tokenizer.eos_token_id,
-        )
+        out = model.generate(**_gen_kwargs(inputs, max_new_tokens, temperature))
     prompt_len = inputs["input_ids"].shape[-1]
-    return tokenizer.decode(out[0][prompt_len:], skip_special_tokens=True)
+    raw = tokenizer.decode(out[0][prompt_len:], skip_special_tokens=True)
+    return _strip_think(raw)
 
 def run_generation_stream(inputs: dict, max_new_tokens: int, temperature: float) -> TextIteratorStreamer:
     """Non-blocking generation. Returns a streamer to iterate over."""
     streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
     threading.Thread(
         target=model.generate,
-        kwargs=dict(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            temperature=max(temperature, 0.01),
-            do_sample=temperature > 0.05,
-            pad_token_id=tokenizer.eos_token_id,
-            streamer=streamer,
-        ),
+        kwargs=dict(**_gen_kwargs(inputs, max_new_tokens, temperature), streamer=streamer),
         daemon=True,
     ).start()
     return streamer
+
+def stream_filtered(streamer):
+    """
+    Yield chunks with <think>...</think> blocks suppressed.
+    Works across chunk boundaries by buffering while inside a think block.
+    """
+    buf = ""
+    in_think = False
+    for chunk in streamer:
+        buf += chunk
+        while True:
+            if in_think:
+                end = buf.find("</think>")
+                if end == -1:
+                    buf = ""
+                    break
+                buf = buf[end + len("</think>"):]
+                in_think = False
+            else:
+                start = buf.find("<think>")
+                if start == -1:
+                    yield buf
+                    buf = ""
+                    break
+                if start > 0:
+                    yield buf[:start]
+                buf = buf[start + len("<think>"):]
+                in_think = True
+    leftover = buf.strip()
+    if leftover and not in_think:
+        yield leftover
 
 # ── 7. FastAPI ────────────────────────────────────────────────
 from fastapi import FastAPI, Request, HTTPException
@@ -307,7 +353,8 @@ async def agent_endpoint(request: Request):
         streamer = run_generation_stream(inputs, max_tok, temp)
 
         async def event_gen():
-            for chunk in streamer:
+            for chunk in stream_filtered(streamer):
+                if not chunk: continue
                 yield f"data: {json.dumps({'choices':[{'delta':{'content':chunk}}]})}\n\n"
             yield "data: [DONE]\n\n"
 
@@ -337,7 +384,8 @@ async def chat_completions(request: Request):
         streamer = run_generation_stream(inputs, max_tok, temp)
 
         async def event_gen():
-            for chunk in streamer:
+            for chunk in stream_filtered(streamer):
+                if not chunk: continue
                 yield f"data: {json.dumps({'choices':[{'delta':{'content':chunk}}]})}\n\n"
             yield "data: [DONE]\n\n"
 
