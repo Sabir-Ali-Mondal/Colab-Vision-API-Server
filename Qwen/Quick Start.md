@@ -1,7 +1,14 @@
-```markdown
-# Qwen3.5 Multimodal Agent — Quick Start
+````markdown
+# Qwen3.5 Python Client — Quick Start (Multimodal + Chat)
 
-Send images, PDFs, videos, and text to your Qwen3.5 server in one call.
+A clean, OpenRouter-style Python client for your Qwen3.5 server.
+
+Supports:
+- Text chat
+- Images, PDFs, videos
+- Local files + URLs
+- Streaming responses
+- Automatic endpoint routing
 
 ---
 
@@ -9,132 +16,243 @@ Send images, PDFs, videos, and text to your Qwen3.5 server in one call.
 
 ```bash
 pip install requests
+````
+
+---
+
+## The Client
+
+Save as `client.py`:
+
+```python
+import base64
+import mimetypes
+import requests
+from pathlib import Path
+
+
+# ======================================================
+# CLIENT
+# ======================================================
+class QwenClient:
+    def __init__(self, base_url: str, api_key: str = ""):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+
+    def _encode_file(self, path: str) -> str:
+        path = Path(path)
+        mime, _ = mimetypes.guess_type(path)
+
+        if mime is None:
+            mime = "application/octet-stream"
+
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+
+        return f"data:{mime};base64,{b64}"
+
+    def _prepare_files(self, files=None, urls=None):
+        output = []
+
+        if files:
+            for f in files:
+                output.append(self._encode_file(f))
+
+        if urls:
+            output.extend(urls)
+
+        return output
+
+    def run(
+        self,
+        prompt: str,
+        files=None,
+        urls=None,
+        task="general",
+        stream=False,
+        temperature=0.7,
+        max_tokens=1024,
+    ):
+        all_files = self._prepare_files(files, urls)
+
+        headers = {"Content-Type": "application/json"}
+
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        use_agent = len(all_files) > 0
+
+        if use_agent:
+            endpoint = "/v1/agent"
+            payload = {
+                "prompt": prompt,
+                "files": all_files,
+                "task": task,
+                "stream": stream,
+            }
+        else:
+            endpoint = "/v1/chat/completions"
+            payload = {
+                "model": "Qwen/Qwen3.5-4B",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": stream,
+            }
+
+        response = requests.post(
+            self.base_url + endpoint,
+            headers=headers,
+            json=payload,
+            stream=stream,
+            timeout=300,
+        )
+
+        if not response.ok:
+            raise Exception(response.text)
+
+        # STREAM MODE
+        if stream:
+            full = ""
+
+            for line in response.iter_lines():
+                if not line:
+                    continue
+
+                line = line.decode()
+
+                if not line.startswith("data:"):
+                    continue
+
+                raw = line[5:].strip()
+
+                if raw == "[DONE]":
+                    break
+
+                try:
+                    chunk = requests.utils.json.loads(raw)
+                    delta = chunk.get("choices", [{}])[0] \
+                                 .get("delta", {}) \
+                                 .get("content", "")
+
+                    print(delta, end="", flush=True)
+                    full += delta
+
+                except Exception:
+                    pass
+
+            print()
+            return full
+
+        # NORMAL MODE
+        data = response.json()
+
+        return (
+            data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content")
+            or data.get("error")
+            or "No response"
+        )
 ```
 
 ---
 
-## The Code
-
-Save as `agent.py`:
+## Basic Usage
 
 ```python
-import base64
-import requests
-import mimetypes
-from pathlib import Path
+from client import QwenClient
 
-# ── CONFIG ────────────────────────────────────────────────────
-BASE_URL = "https://xxxx-xxxx.trycloudflare.com/v1/agent"
-API_KEY  = ""   # leave empty if you did not set one
-# ─────────────────────────────────────────────────────────────
+client = QwenClient(
+    base_url="https://xxxx-xxxx.trycloudflare.com",
+    api_key=""
+)
 
-def encode_file(path: str) -> str:
-    """Convert a local file to base64 data URL."""
-    path = Path(path)
-    mime, _ = mimetypes.guess_type(path)
-    if mime is None:
-        raise ValueError(f"Cannot detect MIME type for {path}")
-    with open(path, "rb") as f:
-        encoded = base64.b64encode(f.read()).decode()
-    return f"data:{mime};base64,{encoded}"
+response = client.run(
+    prompt="Explain quantum computing simply."
+)
 
-
-def ask(
-    prompt: str,
-    files: list = None,
-    urls:  list = None,
-    task:  str  = "general"
-) -> str:
-    """
-    prompt : your question or instruction
-    files  : list of local file paths  (pdf, jpg, png, mp4, etc.)
-    urls   : list of remote URLs       (pdf, jpg, png, mp4, etc.)
-    task   : "general" | "coding" | "reasoning"
-    """
-    payload_files = []
-
-    if files:
-        for f in files:
-            payload_files.append(encode_file(f))
-
-    if urls:
-        payload_files.extend(urls)
-
-    headers = {"Content-Type": "application/json"}
-    if API_KEY:
-        headers["Authorization"] = f"Bearer {API_KEY}"
-
-    response = requests.post(
-        BASE_URL,
-        headers=headers,
-        json={
-            "prompt": prompt,
-            "files":  payload_files,
-            "task":   task,
-            "stream": False
-        },
-        timeout=300
-    )
-
-    if response.status_code != 200:
-        raise Exception(f"Error {response.status_code}: {response.text}")
-
-    return response.json()["choices"][0]["message"]["content"]
-
-
-# ── EXAMPLES — edit and run ───────────────────────────────────
-if __name__ == "__main__":
-
-    # Example 1: plain text question
-    print(ask("What is the capital of France?"))
-
-    # Example 2: analyze a local image
-    # print(ask("Describe this image.", files=["photo.jpg"]))
-
-    # Example 3: summarize a local PDF
-    # print(ask("Summarize this document.", files=["report.pdf"]))
-
-    # Example 4: analyze image from URL
-    # print(ask("What is in this image?", urls=["https://example.com/chart.png"]))
-
-    # Example 5: analyze PDF from URL
-    # print(ask("Extract key points.", urls=["https://example.com/report.pdf"]))
-
-    # Example 6: mixed — local file + remote URL + question
-    # print(ask(
-    #     "Compare these two documents and summarize differences.",
-    #     files=["local.pdf"],
-    #     urls=["https://example.com/other.pdf"],
-    #     task="reasoning"
-    # ))
+print(response)
 ```
+
+---
+
+## Multimodal Example (Files + URLs)
+
+```python
+response = client.run(
+    prompt="Analyze all inputs and give a summary.",
+
+    files=[
+        "image.jpg",
+        "document.pdf",
+        "video.mp4"
+    ],
+
+    urls=[
+        "https://example.com/chart.png"
+    ],
+
+    task="reasoning"
+)
+
+print(response)
+```
+
+---
+
+## Streaming Output (Live Tokens)
+
+```python
+client.run(
+    prompt="Write a story about space.",
+    stream=True
+)
+```
+
+---
+
+## How It Works
+
+| Input Type | Endpoint Used          |
+| ---------- | ---------------------- |
+| Text only  | `/v1/chat/completions` |
+| With files | `/v1/agent`            |
+
+---
+
+## Task Modes
+
+| Task        | Description                |
+| ----------- | -------------------------- |
+| `general`   | Normal Q&A, summaries      |
+| `coding`    | Code generation, debugging |
+| `reasoning` | Complex analysis, math     |
+
+---
+
+## Supported Inputs
+
+| Type   | Local File     | URL |
+| ------ | -------------- | --- |
+| Image  | jpg, png, gif  | ✓   |
+| PDF    | pdf            | ✓   |
+| Video  | mp4, webm, mov | ✓   |
+| Base64 | auto-generated | ✓   |
+
+---
+
+## Notes
+
+* Local files are automatically converted to base64
+* URLs are sent directly (no download needed)
+* No plugins required (PDF parsing handled server-side)
+* Works with any Qwen3.5 server instance
 
 ---
 
 ## Run
 
 ```bash
-python agent.py
-```
-
----
-
-## Task Options
-
-| Task | When to use |
-|---|---|
-| `general` | Summaries, questions, descriptions |
-| `coding` | Code review, debugging, generation |
-| `reasoning` | Math, comparisons, multi-step analysis |
-
----
-
-## Supported File Types
-
-| Type | Local file | Remote URL |
-|---|---|---|
-| Image | `jpg, png, gif, bmp, tiff` | ✓ |
-| PDF | `pdf` | ✓ |
-| Video | `mp4, mov, avi, webm, mkv` | ✓ |
-| Base64 data URL | `data:image/jpeg;base64,...` | — |
+python your_script.py
 ```
