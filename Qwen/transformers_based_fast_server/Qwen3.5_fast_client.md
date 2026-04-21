@@ -25,14 +25,29 @@ Save this as `qwen_client.py`:
 
 ```python
 """
-Qwen3.5 Gateway — Python Client
-Supports: text, images, PDFs, videos | local files + URLs | streaming
+Qwen3.5 Client — Quick Start
+─────────────────────────────
+1. Start the Colab server and copy the trycloudflare URL.
+2. Set BASE_URL below (or leave as-is to be prompted).
+3. Run:  python qwen_client.py
+
+All-in-one example at the bottom shows every feature in one call:
+  client.run(
+      prompt  = "Describe all the files and answer my question.",
+      files   = ["local_image.jpg", "local_doc.pdf"],   # local files
+      urls    = ["https://example.com/image.png",        # remote image
+                 "https://example.com/doc.pdf",          # remote PDF
+                 "https://example.com/video.mp4"],       # remote video
+      stream  = True,          # stream tokens as they arrive
+      max_tokens = 1024,
+      temperature = 0.7,
+  )
+
+  # Text-only (no files/urls) → routed to /v1/chat/completions
+  # Any file/url present     → routed to /v1/agent (multimodal)
 """
 
-import base64
-import json
-import mimetypes
-import requests
+import base64, json, mimetypes, requests
 from pathlib import Path
 
 
@@ -40,226 +55,138 @@ class QwenClient:
     def __init__(self, base_url: str, api_key: str = ""):
         self.base_url = base_url.rstrip("/")
         self.api_key  = api_key
-        self.model    = "Qwen/Qwen3.5-4B"  # updated from /v1/models on connect
+        self.model    = "Qwen/Qwen3.5-4B"
 
-    # ------------------------------------------------------------------
-    # Connection + health
-    # ------------------------------------------------------------------
     def connect(self) -> bool:
-        """
-        Check /health and fetch the real model name from /v1/models.
-        Returns True if server is reachable.
-        """
+        """Health-check + fetch real model name. Call before first use."""
         try:
-            r = requests.get(f"{self.base_url}/health", timeout=10)
-            r.raise_for_status()
+            requests.get(f"{self.base_url}/health", timeout=10).raise_for_status()
         except Exception as e:
-            raise ConnectionError(f"Server unreachable at {self.base_url}: {e}")
-
+            raise ConnectionError(f"Cannot reach server: {e}")
         try:
-            r = requests.get(f"{self.base_url}/v1/models", timeout=10)
-            data = r.json()
-            models = data.get("data", [])
-            if models:
-                self.model = models[0]["id"]
-        except Exception:
-            pass  # keep default model name
+            d = requests.get(f"{self.base_url}/v1/models", timeout=10).json()
+            if d.get("data"): self.model = d["data"][0]["id"]
+        except: pass
+        print(f"[OK] Connected — {self.model}"); return True
 
-        print(f"[OK] Connected — model: {self.model}")
-        return True
-
-    # ------------------------------------------------------------------
-    # File helpers
-    # ------------------------------------------------------------------
-    def _encode_file(self, path: str) -> str:
-        """Read a local file and return a base64 data URI."""
+    def _encode(self, path: str) -> str:
+        """Local file → base64 data URI."""
         p = Path(path)
-        if not p.exists():
-            raise FileNotFoundError(f"File not found: {path}")
-        mime, _ = mimetypes.guess_type(p)
-        mime = mime or "application/octet-stream"
-        b64  = base64.b64encode(p.read_bytes()).decode()
-        return f"data:{mime};base64,{b64}"
+        if not p.exists(): raise FileNotFoundError(path)
+        mime = mimetypes.guess_type(p)[0] or "application/octet-stream"
+        return f"data:{mime};base64,{base64.b64encode(p.read_bytes()).decode()}"
 
-    def _prepare_sources(self, files=None, urls=None) -> list:
-        sources = []
-        for f in (files or []):
-            if isinstance(f, str) and f.startswith("data:"):
-                sources.append(f)          # already base64
-            else:
-                sources.append(self._encode_file(str(f)))
-        for u in (urls or []):
-            sources.append(str(u))         # pass URL as-is; server handles download
-        return sources
+    def run(self, prompt: str, files=None, urls=None,
+            stream=False, temperature=0.7, max_tokens=1024) -> str:
+        """
+        Send a request to the server.
 
-    # ------------------------------------------------------------------
-    # Main run
-    # ------------------------------------------------------------------
-    def run(
-        self,
-        prompt: str,
-        files=None,
-        urls=None,
-        stream: bool = False,
-        temperature: float = 0.7,
-        max_tokens: int = 1024,
-    ) -> str:
-        sources = self._prepare_sources(files, urls)
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        prompt      : your question or instruction
+        files       : list of local file paths  (images, PDFs)
+        urls        : list of remote URLs       (images, PDFs, videos)
+        stream      : True = print tokens live, False = wait for full reply
+        temperature : 0 = deterministic, 0.7 = default, 1.0 = creative
+        max_tokens  : max reply length
+        """
+        sources = [self._encode(f) for f in (files or []) if not str(f).startswith("data:")]
+        sources += [f for f in (files or []) if str(f).startswith("data:")]
+        sources += list(urls or [])
+
+        hdrs = {"Content-Type": "application/json"}
+        if self.api_key: hdrs["Authorization"] = f"Bearer {self.api_key}"
 
         if sources:
-            # Multimodal path — /v1/agent
-            endpoint = "/v1/agent"
-            payload  = {
-                "prompt":      prompt,
-                "files":       sources,
-                "stream":      stream,
-                "temperature": temperature,
-                "max_tokens":  max_tokens,
+            ep, body = "/v1/agent", {
+                "prompt": prompt, "files": sources,
+                "stream": stream, "temperature": temperature, "max_tokens": max_tokens,
             }
         else:
-            # Text-only path — /v1/chat/completions
-            endpoint = "/v1/chat/completions"
-            payload  = {
-                "model":       self.model,
-                "messages":    [{"role": "user", "content": prompt}],
-                "stream":      stream,
-                "temperature": temperature,
-                "max_tokens":  max_tokens,
+            ep, body = "/v1/chat/completions", {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": stream, "temperature": temperature, "max_tokens": max_tokens,
             }
 
-        try:
-            resp = requests.post(
-                self.base_url + endpoint,
-                headers=headers,
-                json=payload,
-                stream=stream,
-                timeout=300,
-            )
-        except Exception as e:
-            raise ConnectionError(f"Request failed: {e}")
+        resp = requests.post(self.base_url + ep, headers=hdrs, json=body,
+                             stream=stream, timeout=300)
+        if not resp.ok: raise RuntimeError(f"[{resp.status_code}] {resp.text}")
 
-        if not resp.ok:
-            raise RuntimeError(f"API error ({resp.status_code}): {resp.text}")
-
-        # ── Streaming ─────────────────────────────────────────
         if stream:
             full = ""
-            try:
-                for raw_line in resp.iter_lines():
-                    if not raw_line:
-                        continue
-                    line = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, bytes) else raw_line
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data)
-                        delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                        if delta:
-                            print(delta, end="", flush=True)
-                            full += delta
-                    except Exception:
-                        continue
-            except Exception as e:
-                print(f"\n[Stream error] {e}")
-            print()
-            return full
+            for line in resp.iter_lines():
+                line = line.decode() if isinstance(line, bytes) else line
+                if not line.startswith("data:"): continue
+                data = line[5:].strip()
+                if data == "[DONE]": break
+                try:
+                    tok = json.loads(data)["choices"][0]["delta"].get("content", "")
+                    if tok: print(tok, end="", flush=True); full += tok
+                except: pass
+            print(); return full
 
-        # ── Non-streaming ─────────────────────────────────────
-        try:
-            data = resp.json()
-        except Exception:
-            raise RuntimeError("Server returned invalid JSON")
-
-        return (
-            data.get("choices", [{}])[0].get("message", {}).get("content")
-            or data.get("error")
-            or "No response"
-        )
-
-    # ------------------------------------------------------------------
-    # Convenience wrappers
-    # ------------------------------------------------------------------
-    def chat(self, prompt: str, **kw) -> str:
-        return self.run(prompt, **kw)
-
-    def analyze(self, prompt: str, files=None, urls=None, **kw) -> str:
-        return self.run(prompt, files=files, urls=urls, **kw)
+        return (resp.json().get("choices", [{}])[0]
+                .get("message", {}).get("content") or "No response")
 
 
-# ======================================================================
-# Example usage — runs all 7 tests when executed directly
-# ======================================================================
+# ── Quick-start tests ─────────────────────────────────────────
 if __name__ == "__main__":
-    # 1. Setup
     BASE_URL = "https://xxxx-xxxx.trycloudflare.com"
     if "xxxx-xxxx" in BASE_URL:
-        BASE_URL = input("Paste your TryCloudflare URL: ").strip()
-        while not BASE_URL.startswith("http"):
-            print("Must start with https://")
-            BASE_URL = input("Paste your TryCloudflare URL: ").strip()
+        BASE_URL = input("Paste TryCloudflare URL: ").strip()
 
-    client = QwenClient(base_url=BASE_URL)
-    client.connect()  # health check + fetch real model name
-    print("=" * 50 + "\n")
+    client = QwenClient(BASE_URL)
+    client.connect()
+    print("=" * 50)
 
-    # ── Test 1: text only ────────────────────────────────────
-    print("[1/7] Text only")
-    print(client.run("What is the capital of France?", temperature=0))
-    print("-" * 40)
+    # 1. Text only
+    print("\n[1] Text")
+    print(client.run("What is the capital of France?"))
 
-    # ── Test 2: image URL ────────────────────────────────────
-    print("\n[2/7] Image URL")
-    print(client.run(
-        "Describe this image.",
-        urls=["https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/test-img.jpg"],
-    ))
-    print("-" * 40)
+    # 2. Image URL
+    print("\n[2] Image URL")
+    print(client.run("Describe this image.",
+        urls=["https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/test-img.jpg"]))
 
-    # ── Test 3: PDF URL ──────────────────────────────────────
-    print("\n[3/7] PDF URL")
-    print(client.run(
-        "Summarise this PDF in 3 bullet points.",
-        urls=["https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/report-pdf.pdf"],
-    ))
-    print("-" * 40)
+    # 3. PDF URL
+    print("\n[3] PDF URL")
+    print(client.run("Summarise in 3 points.",
+        urls=["https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/report-pdf.pdf"]))
 
-    # ── Test 4: video URL ────────────────────────────────────
-    print("\n[4/7] Video URL")
-    print(client.run(
-        "Describe what is happening in this video.",
-        urls=["https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/sample-10s-360p.mp4"],
-    ))
-    print("-" * 40)
+    # 4. Video URL
+    print("\n[4] Video URL")
+    print(client.run("Describe what is happening.",
+        urls=["https://raw.githubusercontent.com/Sabir-Ali-Mondal/Colab-Vision-API-Server/main/sample-data/sample-10s-360p.mp4"]))
 
-    # ── Test 5: local files ──────────────────────────────────
-    print("\n[5/7] Local files")
+    # 5. Local files (skipped if not found)
+    print("\n[5] Local files")
     try:
-        print(client.run(
-            "Analyse both files.",
-            files=["test-img.jpg", "report-pdf.pdf"],
-        ))
+        print(client.run("Analyse these files.",
+            files=["test-img.jpg", "report-pdf.pdf"]))
     except FileNotFoundError:
-        print("[SKIPPED] test-img.jpg / report-pdf.pdf not found locally.")
-    print("-" * 40)
+        print("[SKIPPED] Place test-img.jpg and report-pdf.pdf here to test.")
 
-    # ── Test 6: base64 image ─────────────────────────────────
-    print("\n[6/7] Base64 image (1×1 pixel)")
-    tiny_png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAApgAAAKYB3X3/OAAAABl0RVh0U29mdHdhcmUAd3d3Lmlua3NjYXBlLm9yZ5vuPBoAAANCSURBVEiJtZZPbBtFFMZ/M7ubXdtdb1xSFyeilBapySVU8h8OoFaooFSqiihIVIpQBKci6KEg9Q6H9kovIHoCIVQJJCKE1ENFjnAgcaSGC6rEnxBwA04Tx43t2FnvDAfjkNibxgHxnWb2e/u992bee7tCa00YFsffekFY+nUzFtjW0LrvjRXrCDIAaPLlW0nHL0SsZtVoaF98mLrx3pdhOqLtYPHChahZcYYO7KvPFxvRl5XPp1sN3adWiD1ZAqD6XYK1b/dvE5IWryTt2udLFedwc1+9kLp+vbbpoDh+6TklxBeAi9TL0taeWpdmZzQDry0AcO+jQ12RyohqqoYoo8RDwJrU+qXkjWtfi8Xxt58BdQuwQs9qC/afLwCw8tnQbqYAPsgxE1S6F3EAIXux2oQFKm0ihMsOF71dHYx+f3NND68ghCu1YIoePPQN1pGRABkJ6Bus96CutRZMydTl+TvuiRW1m3n0eDl0vRPcEysqdXn+jsQPsrHMquGeXEaY4Yk4wxWcY5V/9scqOMOVUFthatyTy8QyqwZ+kDURKoMWxNKr2EeqVKcTNOajqKoBgOE28U4tdQl5p5bwCw7BWquaZSzAPlwjlithJtp3pTImSqQRrb2Z8PHGigD4RZuNX6JYj6wj7O4TFLbCO/Mn/m8R+h6rYSUb3ekokRY6f/YukArN979jcW+V/S8g0eT/N3VN3kTqWbQ428m9/8k0P/1aIhF36PccEl6EhOcAUCrXKZXXWS3XKd2vc/TRBG9O5ELC17MmWubD2nKhUKZa26Ba2+D3P+4/MNCFwg59oWVeYhkzgN/JDR8deKBoD7Y+ljEjGZ0sosXVTvbc6RHirr2reNy1OXd6pJsQ+gqjk8VWFYmHrwBzW/n+uMPFiRwHB2I7ih8ciHFxIkd/3Omk5tCDV1t+2nNu5sxxpDFNx+huNhVT3/zMDz8usXC3ddaHBj1GHj/As08fwTS7Kt1HBTmyN29vdwAw+/wbwLVOJ3uAD1wi/dUH7Qei66PfyuRj4Ik9is+hglfbkbfR3cnZm7chlUWLdwmprtCohX4HUtlOcQjLYCu+fzGJH2QRKvP3UNz8bWk1qMxjGTOMThZ3kvgLI5AzFfo379UAAAAASUVORK5CYII="
-    print(client.run("What color is this image?", files=[tiny_png]))
-    print("-" * 40)
+    # 6. Base64 direct
+    print("\n[6] Base64 image")
+    tiny = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg=="
+    print(client.run("What color is this pixel?", files=[tiny]))
 
-    # ── Test 7: streaming ────────────────────────────────────
-    print("\n[7/7] Streaming text")
-    client.run("Write a 3-sentence sci-fi story about a robot.", stream=True)
-    print("\n" + "-" * 40)
+    # 7. Streaming
+    print("\n[7] Streaming")
+    client.run("Write a 3-sentence sci-fi story.", stream=True)
 
-    print("\n[SUCCESS] All tests done.")
+    # ── All-in-one example (uncomment to use) ────────────────
+    # print("\n[ALL-IN-ONE]")
+    # print(client.run(
+    #     prompt      = "Summarise the PDF, describe the image, and answer: what connects them?",
+    #     files       = ["local_image.jpg"],
+    #     urls        = ["https://example.com/doc.pdf",
+    #                    "https://example.com/clip.mp4"],
+    #     stream      = True,
+    #     max_tokens  = 2048,
+    #     temperature = 0.5,
+    # ))
+
+    print("\n[DONE]")
 ```
 
 ---
